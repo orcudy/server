@@ -18,6 +18,11 @@ To run server:
 python twisted-server.py localhost
 ```
 
+Running Twisted for a good time:
+```
+twistd -n web --path . --https=8081 --privkey <your key here> --certificate <your certificate here>
+```
+
 Sample GET:
 ```sh
 curl --http2 https://httpbin.org/get
