@@ -4,9 +4,6 @@ twisted-server.py
 ~~~~~~~~~~~~~~~~~
 
 A fully-functional HTTP/2 server written for Twisted.
-
-source: https://github.com/python-hyper/hyper-h2/blob/master/examples/twisted/twisted-server.py
-
 """
 import functools
 import mimetypes
@@ -26,18 +23,22 @@ from h2.events import (
 
 from twisted.web import server, resource
 import json
+import MySQLdb
 
 def close_file(file, d):
     file.close()
 
 READ_CHUNK_SIZE = 8192
 
+should_register = False
+should_read = False
 
 class H2Protocol(Protocol):
     def __init__(self, root):
         self.conn = H2Connection(client_side=False)
         self.known_proto = None
         self.root = root
+
         self._flow_control_deferreds = {}
 
     def connectionMade(self):
@@ -61,31 +62,61 @@ class H2Protocol(Protocol):
                 self.windowUpdated(event)
 
     def requestReceived(self, headers, stream_id):
-		
         headers = dict(headers)  # Invalid conversion, fix later.
-        
+
+        path = headers[':path'].lstrip('/')
+        full_path = os.path.join(self.root, path)
+        print "Given path: ", path
+        print "Full path: ", full_path
+
         if headers[':method'] == 'POST':
             print '--RECEIVED POST'
             
             if headers['content-type'] == 'application/json':
                 length = headers['content-length']
-
-            response_headers = [
-                (':status', '201'),
-                ('server', 'twisted-h2'),
-            ]
-            self.conn.send_headers(stream_id, response_headers)
-            self.transport.write(self.conn.data_to_send())
-                      
-            return     
+	    
+            if path in ['register', 'REGISTER']:
+				print "Setting register to true."
+				global should_register 
+				should_register = True
+				response_headers = [
+		            (':status', '201'),
+		            ('server', 'twisted-h2'),
+		        ]
+				self.conn.send_headers(stream_id, response_headers)
+				self.transport.write(self.conn.data_to_send())
+            
+				print "POST complete."
+				return     
             
         elif headers[':method'] == 'GET':
-        	print '--RECEIVED GET'
-
-        path = headers[':path'].lstrip('/')
-        full_path = os.path.join(self.root, path)
+			print '--RECEIVED GET'
+		
+			if ("read" in path) or ("READ" in path):
+				print "READ request!"
+				global should_read
+				should_read = True
+				uname = path.split('/')[-1]
+				print "should read '%s'" % uname
+				to_send = self.db_get(uname)
+		
+				print "about to send %s" % to_send
+				response_headers = [
+					(':status', '200'),
+					('content-length', str(len(to_send))),
+					('server', 'twisted-h2'),
+				]
+			
+				response_headers.append(('content-type', 'application/json'))
+				self.conn.send_headers(stream_id, response_headers)
+				self.conn.send_data(stream_id, to_send, False)
+				self.transport.write(self.conn.data_to_send())
+				print "GET complete."
+				returnros
+		
 
         if not os.path.exists(path):
+	    print "Nothing to return, no file '%s'" % path
             response_headers = (
                 (':status', '404'),
                 ('content-length', '0'),
@@ -97,19 +128,72 @@ class H2Protocol(Protocol):
             self.transport.write(self.conn.data_to_send())
         else:
             self.sendFile(path, stream_id)
-
+        print "GET complete."
         return
 
     def dataFrameReceived(self, stream_id, data):
-        dat = json.loads(data)
-        print "username: " + dat["username"]
-        print "token:    " + dat["token"]
+		dat = json.loads(data)
+
+		print "register? ", should_register	
+
+		try:
+			print "username: " + dat["username"]
+			print "email:	 " + dat["email"]
+			print "token:    " + dat["token"]
+			if should_register:
+				self.db_set(dat)
+		except KeyError:
+			print "Invalid POST!"
+			pass
+		self.conn.reset_stream(stream_id)
+		self.transport.write(self.conn.data_to_send())
+
+    # store values in database
+    def db_set(self, dat):
+        db = MySQLdb.connect("localhost", "130user", "130security", "cs130")
+        cursor = db.cursor()
         
-        self.conn.reset_stream(stream_id)
-        self.transport.write(self.conn.data_to_send())
+        print "in db_set, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
+        sql = "INSERT INTO Users (username, email, id_token) VALUES ('%s', '%s', '%s')" % \
+			 (dat["username"], dat["email"], dat["token"])
+		
+        try:
+			cursor.execute(sql)
+			db.commit()
+        except:
+			db.rollback()
+			print "Error inserting, rolling back..."
+        db.close()
+        global should_register	
+        should_register = False
+        print "Values inserted into database."
+
+    # get values from database
+    def db_get(self, data):
+		db = MySQLdb.connect("localhost", "130user", "130security", "cs130")
+		cursor = db.cursor()
+
+		print "in db_get with username '%s'" % data
+		sql = "SELECT id_token FROM Users WHERE username= '%s' " % data
+	 
+		try:
+			cursor.execute(sql)
+			res = cursor.fetchall()
+		except:
+			print "Error fetching data..."
+		db.close()
+		global should_read
+		should_read = False
+		print "Values obtained from database.", res[0][0]
+
+		jstr = {}
+		jstr['username'] = data
+		jstr['token'] = res[0][0]
+		jstr_data = json.dumps(jstr)
+
+		return "'%s'" % jstr_data
 
     def sendFile(self, file_path, stream_id):
-     	
         filesize = os.stat(file_path).st_size
         content_type, content_encoding = mimetypes.guess_type(file_path)
         response_headers = [
@@ -186,7 +270,6 @@ class H2Factory(Factory):
     def buildProtocol(self, addr):
         return H2Protocol(self.root)
 
-
 root = sys.argv[1]
 
 with open('../certs/server.crt', 'r') as f:
@@ -203,6 +286,6 @@ options = ssl.CertificateOptions(
 )
 
 endpoint = endpoints.SSL4ServerEndpoint(reactor, 8080, options, backlog=128)
-print 'Server is running...'
+print "Server is running..."
 endpoint.listen(H2Factory(root))
 reactor.run()
