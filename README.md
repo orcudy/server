@@ -23,6 +23,7 @@ Running Twisted for a good time:
 twistd -n web --path . --https=8081 --privkey <your key here> --certificate <your certificate here>
 ```
 
+### If deploying locally
 Sample GET:
 ```sh
 curl --http2 https://httpbin.org/get
@@ -30,5 +31,17 @@ curl --http2 https://localhost:8080
 ```
 Sample POST:
 ```sh
-curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"poncho","token":"3498573984579348"}' https://localhost:8080/
+curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"poncho","email":"whatever@some.com","token":"3498573984579348"}' https://localhost:8080/
+```
+
+### Deployed on the droplet
+
+POST:
+```sh
+curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"sexy","email":"sexy@email.com","token":"3498573984579348"}' https://45.55.160.135:8080/register
+```
+
+GET:
+```sh
+curl --http2 https://45.55.160.135:8080/read/sexy
 ```
