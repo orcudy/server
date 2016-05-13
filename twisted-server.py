@@ -112,8 +112,7 @@ class H2Protocol(Protocol):
 				self.conn.send_data(stream_id, to_send, False)
 				self.transport.write(self.conn.data_to_send())
 				print "GET complete."
-				returnros
-		
+				return
 
         if not os.path.exists(path):
 	    print "Nothing to return, no file '%s'" % path
