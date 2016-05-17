@@ -97,3 +97,29 @@ The above get should return a JSON of the form
 ```
 {"usernae": "sexy", "token":"3498573984579348"}
 ```
+
+## How to run server in the background:
+Since the server requires the PEM pass phrase to be provided when starting it, it is not feasible 
+to just run it with nohup. Instead, here is how I've been running it in background:
+
+1. Start the server as usual and type in the pass phrase when prompted.
+```sh
+python twisted-server.py localhost
+```
+
+2. Pause the server with "Ctrl-z," which will print something like
+```sh
+[1]+ Stopped        python twisted-server.py 45.55.160.135
+```
+
+3. Note that [1] is the job ID that we now use to disown the service:
+```sh
+disown -h %1
+```
+
+4. Now start the job in background:
+```sh 
+bg %1
+```
+
+5. PROFIT!
