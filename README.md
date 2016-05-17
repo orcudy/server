@@ -8,7 +8,7 @@ This server is based on the Twisted Python example from [hyper-h2 demo](https://
 - mysql-server
 - virtualenv (optional, but highly recommended!)
 
-# Note: 
+### Note: 
 Some of the Requirements listed below may need other libraries to be installed, otherwise you'll 
 have issues when you try to install libraries with pip. 
 Off the top of my head, you may need to run
@@ -48,13 +48,13 @@ You will have to generate your own certificate and key as they are required for 
 lookup a tutorial on how to do that if you don't know. You'll see in the code, near the bottom,
 where to specify the location of your certificate and key. If you don't do this, the server won't run.
 
-# To run server:
+### To run server:
 ```sh
 python twisted-server.py localhost
 ```
 You will have to enter your PEM key phrase after running the above command.
 
-#Running Twisted for a good time:
+### Running Twisted for a good time:
 ```
 twistd -n web --path . --https=8081 --privkey <your key here> --certificate <your certificate here>
 ```
@@ -72,7 +72,7 @@ a user "sexy" via a POST with the following request:
 curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"sexy","email":"whatever@some.com","token":"3498573984579348"}' https://localhost:8080/register
 ```
 
-# GET request to your server:
+### GET request to your server:
 ```sh
 curl --http2 https://localhost:8080/read/sexy
 ```
