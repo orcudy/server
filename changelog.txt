@@ -1,0 +1,90 @@
+Changelog:
+
+5-17-16 9:25pm: 
+	I should've started this a long time ago but... better late than never.
+	Currently, the following has been implemented.
+	Hyper Python Server accepting GET and POST requests over HTTP/2.0.
+	
+	
+	The idea (as I understand it) is as follows:
+	
+	1. Client -> Server: register user
+	When a user first registers on the Client site, we should send a POST 
+	request to register the user on the Server as well.
+	This is done by sending a POST request with:
+		- JSON with the username, email, and token (the token is empty at first)
+		- The URL path ends with /register to signify intent to register user
+
+    Example:
+	curl --http2 -X POST -d '{"username":"tester", "email":"tester@email.com","token":""}' https://<server address>/register
+	
+	Perhaps here it would be appropriate for the Server to return some 
+	unique token to the Client so when the user installs the iPhone App,
+	we can then identify the user via that token.
+	
+	2. User installs App
+	The user installs the iPhone App and logs in (possibly using the unique token
+	to verify the user is valid).
+	
+	3. App -> Server
+	The App may need to contact the Server once to verify registration.
+	
+	4. Server -> APN
+	Once registration is verified, the Server should contact the APN to
+	generate a unique token.
+	
+	5. APN -> App -> Server
+	The APN will push a notification to the App with the unique token, which
+	then must be POST-ed to the Server with the /update path.
+	
+	Example:
+	curl --http2 -X POST -d '{"username":"tester", "email":"tester@email.com","token":"4535675234"}' https://<server address>/update
+	
+	6. Setup complete.
+	
+	7. Client -> Server -> APN -> App -> Server -> Client
+	Now that initialization has been completed, the user can log into the Client site.
+	The Client side sends a POST request to the server, requesting login verification
+	with the /login path.
+	
+	Example:
+	curl --http2 -X POST -d '{"username":"tester"}' https://<server address>/login
+	
+	The Server contacts APN with the saved token to push a notification to the App.
+	The user authenticates on the App.
+	The App sends a POST request to the server with the path /success or /failure.
+	
+	Example:
+	curl --http2 -X POST -d '{"username":"tester"}' https://<server address>/success
+	
+	The Server then sends a POST request to the Client notifying it of successful or
+	failed login. 
+	The Client allows the user in or prevents the user from loggin in, accordingly.
+	
+	The Server here implements (to some extent) 1, 5, and 7. It may need tweaking
+	the permitted JSON but that should be fairly straight forward.
+	I've setup the database on the droplet as follows:
+	
+	database name: cs130
+	table name: Users
+	Contents:
+	+----------+-----------------+----------+
+	| username | email           | id_token |
+	+----------+-----------------+----------+
+	| bro      | bro@email.com   | 34984398 |
+	| ...      | ...             | ...      |
+	+----------+-----------------+----------+
+	
+	So 
+	- POST with path /register and JSON with username, email, and token (blank) will
+	add a new user to the database.
+	- POST will path /update and a JSON with username, email, and token (not blank) will
+	update the database for that user with the new token.
+	- POST with /login is NOT YET IMPLEMENTED.
+	- POST with /success or /failure will send a POST to the Client by passing on a JSON
+	with '{"username":"<username here>", "login":"success"}' or "login":"failure",
+	respectively, to the Client. I'm currently just sending that POST and JSON to 
+	https://httpbin.org/post for testing.
+	
+	
+	
