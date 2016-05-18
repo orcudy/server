@@ -74,7 +74,7 @@ curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"sexy",
 
 ### GET request to your server:
 ```sh
-curl --http2 https://localhost:8080/read/sexy
+curl --http2 https://localhost:8080/user/sexy
 ```
 Note: in the above GET request, we try to obtain info on a user "sexy". Of course, this user has to be 
 in your database before you can get a return for this.
@@ -90,7 +90,7 @@ curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"sexy",
 
 GET:
 ```sh
-curl --http2 https://45.55.160.135:8080/read/sexy
+curl --http2 https://45.55.160.135:8080/user/sexy
 ```
 
 The above get should return a JSON of the form
