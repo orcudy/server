@@ -1,10 +1,73 @@
 Changelog:
 
+5-17-16 10:43pm:
+	The flow is as follows:
+		- Request comes in which calls the dataReceived() functnion to
+		distribute the labor accordingly. 
+		- It first calls requestReceived() to:
+		- verify that the method is valid (i.e. GET or POST)
+		- verify that the path provided is not empty (i.e. https://url/)
+		- get the request data
+		- check whether method is GET or POST
+		- if it's a GET request (for example, the GET request https://url/user/bro
+		returns the username and token for user "bro"), we call handle_GET() function, 
+		which checks whether the username exists in the database (using db_verify()). 
+		- if username is not in the database, it returns a None and so we return 404.
+		- if username is in the database, we return a JSON of the form:
+			'{"username":"bro","token":"44353"}'
+			
+		- if it's a POST request:
+			- we call validate_POST to ensure the path is of the allowed
+			(/register, /update, /login, /success, /failure)
+		- POST requests contain data, so the Server calls dataFrameReceived next
+		- there we call handle_POST() to process the request data
+			- handle /register, /update, /login/, /success, or /failure accordingly
+			- we extract the data from the request JSON
+			- for /register and /update we verify the username
+			- get or update token from database
+			- create JSON for response
+		- finally the server calls streamComplete() to send out the chosen 
+		request and data
+		- end the stream
+		
+		Note that database access is accomplished through the functions:
+		- db_open() to connecto to the database - returns a file handle "db" and
+		a "cursor" for running queries on the database
+		- db_close() closes the database
+		- db_verify() to verify username is or isn't in the database (for POST/GET)
+		- db_get() pulls the token for a specified username from the database
+		- db_set() registers specified users's info in the database
+		- db_update() updates specified user's token in the database
+		
+		Other helper functions include:
+		- errorFound() which sets the "error" flag to eventually return 404 status.
+		- return_200() which returns the 200 status.
+		- return_XXX() which does the actual return of 404 and 405 statuses.
+		
+
+5-17-16 10:34pm:
+	We only allow POST and GET requests by checking from the very start what
+	the method in the POST header is. If it's anything other than a GET/POST,
+	we return a 405 status.
+
+	The server does basic database checks for /register and /update POST request,
+	by running the following query prior to attempting to add/update the user
+	record:
+		SELECT username, COUNT(*) FROM Users WHERE username=<provided username>
+	
+	The logic behind this is that if the user already exists, then we shouldn't
+	be able to register him/her again. Similarly, if the user does not exist,
+	then updating his/her token should not be possible.
+	
+	We check whether the query above returns None. If so, then we raise a
+	flag "error" which is used to skip making the change and just returns
+	a 404.
+	
+
 5-17-16 9:25pm: 
 	I should've started this a long time ago but... better late than never.
 	Currently, the following has been implemented.
 	Hyper Python Server accepting GET and POST requests over HTTP/2.0.
-	
 	
 	The idea (as I understand it) is as follows:
 	
