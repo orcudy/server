@@ -29,6 +29,11 @@ import collections
 import io
 import requests
 
+import crypt
+from datetime import datetime
+from dateutil.parser import parse
+
+
 RequestData = collections.namedtuple('RequestData', ['headers', 'data'])
 
 class H2Protocol(Protocol):
@@ -40,9 +45,12 @@ class H2Protocol(Protocol):
         self.s_body = {}
         self.invalid_method = False
         self.error = False
+        self.method_type = 'None'
         self.post_type = 'None'
         self.success = False
         self.failure = False
+        self.uname = 'None'
+        self.cipher_key = 'f456a56b567f4094ccd45745f063a465'
 
         # this hard-coded URL simulates the Client address
         self.url = 'https://httpbin.org/post' 
@@ -74,66 +82,221 @@ class H2Protocol(Protocol):
                 self.streamComplete(event.stream_id)                
         self.transport.write(self.conn.data_to_send()) 
 
+    
     def requestReceived(self, headers, stream_id):
+        # Read in request headers
         headers = collections.OrderedDict(headers)
-        method = headers[':method']
 
         # Return 405 status if user sends anything other than GET or POST
-        if method not in ('GET', 'POST'):
+        if headers[':method'] not in ('GET', 'POST'):
             self.return_XXX('405', stream_id)
-            print "Unsupported request method '%s'" % method
+            print "Unsupported method '%s'" % method
             self.invalid_method = True
-            return        
-
+            return
+        
+        self.method_type = headers[':method']
         path = headers[':path'].lstrip('/')
         print "Given path: ", path
-        
-        # Return 404 status if user sends an empty path with request
+                        
+        # Return 404 status if empty request path
         if not path:
             print "Nothing to fetch in path '%s'" % path
             self.error = True
             return
-
+        else:
+            # Return 404 if request has invalid parameters
+            if not self.validate_params(path):
+                print "Params are wrong."
+                self.error = True
+                return
+ 
+        # Read data sent with request
         request_data = RequestData(headers, io.BytesIO())
-        self.stream_data[stream_id] = request_data
-            
-        if headers[':method'] == 'POST':
-            print '--RECEIVED POST'
-            self.validate_POST(path, headers, stream_id)    
-        elif headers[':method'] == 'GET':
-            print '--RECEIVED GET' 
-            self.handle_GET(path, stream_id)
+        self.stream_data[stream_id] = request_data 
         
+        # GET can be handled immediately
+        if self.method_type == 'GET':
+            print '-- RECEIVED GET' 
+            self.handle_GET(self.uname, stream_id)
+        # POST will be handled in dataFrameReceived       
+        elif self.method_type == 'POST':
+            print '-- RECEIVED POST'    
+                
         print "Done handling request."
         return
 
-    def validate_POST(self, path, headers, stream_id):
-        if 'register' in path:
-            print "REGISTER new user!"
-            self.post_type = 'register'
-            
-        elif 'update' in path:
-            print "UPDATE user token!"
-            self.post_type = 'update'
-                    
-        elif 'login' in path:
-            print "LOG IN!"
-            self.post_type = 'login'
-            
-        elif 'success' in path:
-            print "SUCCESSFUL login!"
-            self.post_type = 'success'
-            
-        elif 'failure' in path:
-            print "FAILED login!"
-            self.post_type = 'failure'
-                        
-        else:
-            print "BOGUS path"
-            self.error = True
-        
-        print "POST validated as '%s'." % self.post_type
+    # ================================================ #
+    #   Validate request parameters before processing  #
+    # ================================================ #
+    def validate_params(self, path):
+        MAX_GET_PARAMS = 3
+        MAX_POST_PARAMS = 2
     
+        param_list = path.split('/')
+        num_params = len(path.split('/'))
+        print "Param#:", num_params
+        
+        # DEBUGGING
+        i = -(num_params)
+        while (i < 0):
+            param = path.split('/')[i]
+            print "Param['%d']: %s" % ((i + num_params), param)
+            i += 1
+            
+        # Validate GET request    
+        if self.method_type == 'GET':
+            if num_params < MAX_GET_PARAMS:
+                print "Insufficient # params for GET: ", num_params
+                return False
+            elif num_params > MAX_GET_PARAMS:
+                print "Too many params for GET: ", num_params
+                return False
+            else:
+                if param_list[0] != 'user':
+                    print "First param not 'user' but '%s'" % param_list[0]
+                    return False
+
+                ##### call db_validate for username #####
+                if self.db_validate(param_list[1]) is None:
+                    print "Erroneous username provided '%s'" % param_list[1]
+                    return False
+                
+                ##### validate secret #####
+                secret_validated = self.trigger_secret_validation(param_list[2])
+                if not secret_validated:
+                    return False                   
+                
+                # store the validated username
+                self.uname = param_list[1]
+                print "Params verified, setting username to '%s'" % self.uname
+                return True
+                              
+        # Validate POST request:            
+        if self.method_type == 'POST':
+            if num_params < MAX_POST_PARAMS:
+                print "Insufficient # of POST params: ", num_params
+                return False
+            elif num_params > MAX_POST_PARAMS:
+                print "Too many POST params: ", num_params
+                return False
+
+            ##### validate secret #####
+            secret_validated = self.trigger_secret_validation(param_list[1])
+            if not secret_validated:
+                return False
+            
+            ##### check post type #####
+            if param_list[0] == 'register':
+                print "REGISTER new user!"
+                self.post_type = 'register'
+            elif param_list[0] == 'update':
+                print "UPDATE user token!"
+                self.post_type = 'update'
+            elif param_list[0] == 'login':
+                print "LOG IN!"
+                self.post_type = 'login'
+            elif param_list[0] == 'success':
+                print "SUCCESSFUL login!"
+                self.post_type = 'success'
+            elif param_list[0] == 'failure':
+                print "FAILED login!"
+                self.post_type = 'failure'
+            else:
+                print "BOGUS POST param '%s'" % param_list[0]
+                return False
+            
+            print "POST validated as '%s'." % self.post_type
+            return True
+
+    # ================================================ #
+    #   Sends the sender secret to be validated        #
+    # ================================================ #
+    def trigger_secret_validation(self, param):
+        state = self.validate_sender(param)
+        print "state =", state
+        
+        if not state:
+            print "Bad sender secret msg!"
+            return False
+        return True               
+
+    # ================================================ #
+    #   Decrypt encrypted string to validate request   #
+    # ================================================ #
+    def validate_sender(self, secret):
+        c = crypt.AESCipher(self.cipher_key)
+        
+        # Decrypt the secret message
+        plain = c.decrypt(secret)
+        print "Decrypted Message =", plain
+
+        # Validate secret message before parsing
+        if not self.validate_decrypted_msg(plain):
+            print "Creepy sender"
+            return False
+        try:
+            year = parse(plain).year
+            month = parse(plain).month
+            day = parse(plain).day
+            hour = parse(plain).hour
+            minute = parse(plain).minute
+        except ValueError:
+            raise ValueError("Error parsing secret msg time.")
+            return False
+
+        # Get current time to compare with secret
+        curr_time = datetime.now()
+        print "Current time =", str(curr_time)
+
+        try:
+            new_year = parse(str(curr_time)).year
+            new_month = parse(str(curr_time)).month
+            new_day = parse(str(curr_time)).day
+            new_hour = parse(str(curr_time)).hour
+            new_min = parse(str(curr_time)).minute
+        except ValueError:
+            raise ValueError("Error parsing current time.")
+            return False
+
+        if new_year != year:
+            print "Year mismatch!"
+            return False
+        elif new_month != month:
+            print "Month mismatch!"
+            return False
+        elif new_day != day:
+            print "Day mismatch!"
+            return False
+        elif new_hour != hour:
+            print "Hour mismatch!"
+            return False
+
+        ###################################################
+        # This is very liberally set just to ease testing #
+        # In production it should be tested with != and   #
+        # probably the seconds should be tested too!      #
+        ###################################################
+#        elif new_min < minute:
+#            print "Minute mismatch!"
+#            return False
+
+        return True
+    
+    # ================================================ #
+    #   Validate decrypted secret                      #
+    # ================================================ #        
+    def validate_decrypted_msg(self, decrypted_str):
+        try:
+            date = parse(str(decrypted_str))     
+        except ValueError:
+            print "Ha, gotcha! Not a date of the format YYYY/MM/DD HH:MM:SS"
+            return False
+        print "Valid date"  
+        return True
+    
+    # ================================================ #
+    #   Handle POST requests                           #
+    # ================================================ #    
     def handle_POST(self, data, stream_id):
         
         #########################################
@@ -158,7 +321,7 @@ class H2Protocol(Protocol):
                 
                 # if user is already registered, the POST should fail
                 if self.db_validate(jdata["username"]) is not None:
-                    print "ALREADY REGISTERED!"
+                    print "    ALREADY REGISTERED!"
                     self.error = True
                     return                
                 
@@ -190,11 +353,11 @@ class H2Protocol(Protocol):
                 
                 # if user is not registered, the POST should fail
                 if self.db_validate(jdata["username"]) is not None:
-                    print "USER FOUND!"
+                    print "    USER FOUND!"
                     self.db_update(jdata, stream_id)
                     
                 else:
-                    print "CAN'T UPDATE NON-EXISTENT USER!"
+                    print "    CAN'T UPDATE NON-EXISTENT USER!"
                     self.error = True
                     return                
 
@@ -202,9 +365,9 @@ class H2Protocol(Protocol):
                 print "=-=-= Invalid POST with update!"           
                 pass
                 
-        #################################
-        # THIS IS WHERE WE CALL THE APN #
-        #################################    
+        ########################################
+        # THIS IS WHERE WE SHOULD CALL THE APN #
+        ########################################   
         elif 'login' in self.post_type:
             print "...LOG IN user!"
             
@@ -228,7 +391,12 @@ class H2Protocol(Protocol):
             
         print "POST complete."
 
-    # the POST send to notify Client of user's successful/failed authentication
+    # ================================================ #
+    #   When the App sends a POST request to Server    #
+    #   with the success/failure param, we send a      #
+    #   POST request to notify Client of user's        #
+    #   successful or failed login attempt             #
+    # ================================================ #
     def send_POST(self, response):
         hdrs = {'Content-type': 'application/json', 'Accept': 'text/plain'}
         request = requests.post(self.url, data=response, headers=hdrs)
@@ -237,20 +405,12 @@ class H2Protocol(Protocol):
         
         print "    Status code = ", status
         print "    Data: ", jdata
-    
-    def handle_GET(self, path, stream_id):     
-        if ("user" in path):
-            print "GET user request with '%s'" % path
-
-            uname = path.split('/')[-1]               
-
-            if uname and (uname not in 'user'):
-                # if user is not found, the GET should fail
-                if self.db_validate(uname) is None:
-                    print "NOT IN DB!"
-                    self.error = True
-                    return
-
+        
+    # ================================================ #
+    #   Handle GET requests                            #
+    # ================================================ #    
+    def handle_GET(self, uname, stream_id):                 
+            if uname:
                 to_send = self.db_get(uname)
                 
                 print "about to send %s" % to_send
@@ -265,17 +425,21 @@ class H2Protocol(Protocol):
                     self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
                 else:
                     stream_data.data.write(to_send)
+#            else:
+#                print "=== NO username provided!"
+#                self.error = True
+#                return
             else:
-                print "=== NO username provided!"
+                print "=== Invalid username provided!"
                 self.error = True
-                return
-        else:
-            print "=== Invalid username provided!"
-            self.error = True
-            return    
+                return    
             
             print "GET complete."
-        
+
+    # ================================================ #
+    #   This is where POST data is received and we     #
+    #   begin handling the POST request
+    # ================================================ #        
     def dataFrameReceived(self, stream_id, data):
         """
         Pull data from stream or reset if data not expected.
@@ -288,13 +452,19 @@ class H2Protocol(Protocol):
         else:
             self.handle_POST(data, stream_id)
         print "Done with dataFrameReceived."
-        
+
+    # ================================================ #
+    #   When the request has been processed, this is   #
+    #   where we send out the appropriate response     #
+    #   and notify requestor we're done responding     #
+    # ================================================ #        
     def streamComplete(self, stream_id):
         """
         Complete response and send out.
         """
         print "in streamComplete"
         
+        # If any issues were encountered, skip to return 404 instead
         if self.invalid_method:
             print "    skipping due to invalid method."
             return
@@ -302,10 +472,12 @@ class H2Protocol(Protocol):
             print "   skipping due to error flag."
             self.errorFound(stream_id)
             return
+        
+        # We don't need to return data for success/failure requests
         elif self.success or self.failure:
             print "   success/failure flag, return 200"
             data = ''
-            
+
         else:
             try:
                 request_data = self.stream_data[stream_id]
@@ -313,15 +485,18 @@ class H2Protocol(Protocol):
                 print "Yikes in streamComplete."
                 return
 
-            headers = request_data.headers
+            # Pack in the JSON to return in body
             body = json.loads(request_data.data.getvalue().decode('utf-8'))
             
-            if headers[':method'] == 'GET':        
+            # pack data to send with response to GET
+            if self.method_type == 'GET':        
                 data = json.dumps(body).encode("utf8") 
 
-            elif headers[':method'] == 'POST':
+            # POST returns no data
+            elif self.method_type == 'POST':
                 data = ''
-        
+           
+        # Send headers and data
         response_headers = self.return_200(data)
         self.conn.send_headers(stream_id, response_headers)
         self.conn.send_data(stream_id, data, end_stream=True)
@@ -329,32 +504,51 @@ class H2Protocol(Protocol):
         
         print "Done in streamComplete."
 
+    # ================================================ #
+    #   Helper function to open the database           #
+    # ================================================ #
     def db_open(self):
         db = MySQLdb.connect("localhost", "130user", "130security", "cs130")
         cursor = db.cursor()
-        return (db, cursor)  
-
+        return (db, cursor)
+        
+    # ================================================ #
+    #   Helper function to close database (LOL)        #
+    # ================================================ #
     def db_close(self, db):
         db.close()       
 
+    # ================================================ #
+    #   Check whether the user is in the database      #
+    # ================================================ #
     def db_validate(self, data):
         db, cursor = self.db_open()
 
+        # Query database for username
         cursor.execute(
             "SELECT username, COUNT(*) FROM Users WHERE username='%s' " % data
         )        
 
         has_it = cursor.fetchone()
-        print "--> FETCHED: ", has_it[0]
         self.db_close(db)
+
+        # if user is not found, the GET should fail
+        if has_it[0] is None:
+            print "    NOT IN DB!"
+        else:
+            print "--> FETCHED:", has_it[0]
+
         return has_it[0]
         
-    # store values in database
+    # ================================================ #
+    #   Register the user in the database              #
+    # ================================================ #    
     def db_set(self, dat, stream_id):
         db, cursor = self.db_open()
         
         print "in db_set, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
         
+        # Insert values into database 
         sql = "INSERT INTO Users (username, email, id_token) VALUES ('%s', '%s', '%s')" % \
              (dat["username"], dat["email"], dat["token"])
         
@@ -369,12 +563,15 @@ class H2Protocol(Protocol):
             
         self.db_close(db)
 
-    # store values in database
+    # ================================================ #
+    #   Update the user token in the database          #
+    # ================================================ #
     def db_update(self, dat, stream_id):
         db, cursor = self.db_open()
 
         print "in db_set, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
         
+        # Update values in database 
         sql = 'UPDATE Users SET id_token="%s" WHERE username="%s" ' % (dat["token"], dat["username"])
         
         print "UPDATING token"
@@ -382,7 +579,7 @@ class H2Protocol(Protocol):
         try:
             cursor.execute(sql)
             db.commit()
-            print "New token value '%s' inserted into database." % dat["token"]
+            print "    New token value '%s' inserted into database." % dat["token"]
         except:
             db.rollback()
             print "Error inserting, rolling back..."
@@ -390,13 +587,17 @@ class H2Protocol(Protocol):
             
         self.db_close(db)
 
-    # get values from database
+    # ================================================ #
+    #   Get user info from database for GET response   #
+    # ================================================ #
     def db_get(self, data):
         
         print "in db_get with username '%s'" % data
             
         try:
             db, cursor = self.db_open()
+            
+            # Query database for token
             cursor.execute("SELECT id_token FROM Users WHERE username= %s ", (data,))
             res = cursor.fetchall()
             self.db_close(db)
@@ -413,10 +614,16 @@ class H2Protocol(Protocol):
         jstr_data = json.dumps(jstr)
         return jstr_data
 
+    # ================================================ #
+    #   Trigger return of 404 in case of error         #
+    # ================================================ #
     def errorFound(self, stream_id):
         self.error = False
         self.return_XXX('404', stream_id)
 
+    # ================================================ #
+    #   Create the 200 response header                 #
+    # ================================================ #
     def return_200(self, to_send):
         """
         Pack and return 200 status.
@@ -429,6 +636,9 @@ class H2Protocol(Protocol):
         ]
         return response_headers
 
+    # ================================================ #
+    #   Create the 404 and 405 response header         #
+    # ================================================ #
     def return_XXX(self, status, stream_id):    
         """
         Not found or error, return 404 status.
@@ -441,6 +651,9 @@ class H2Protocol(Protocol):
         ]
         self.conn.send_headers(stream_id, response_headers, end_stream=True)
 
+# ================================================ #
+#   Setup the H2 factory for the HTTP/2.0 protocol #
+# ================================================ #
 class H2Factory(Factory):
     def __init__(self, root):
         self.root = root
@@ -450,6 +663,7 @@ class H2Factory(Factory):
 
 root = sys.argv[1]
 
+# Load the certificate and the certificate key
 with open('../certs/server.crt', 'r') as f:
     cert_data = f.read()
 with open('../certs/server.key', 'r') as f:

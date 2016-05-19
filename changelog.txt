@@ -1,5 +1,61 @@
 Changelog:
 
+5-18-16 9:41pm:
+	NOTE: I haven't yet pushed this version to the droplet, will probably do it tomorrow
+		so that I can more thoroughly test it up there (due to the secret functionality
+		described below) to avoid making everyone's life harder.
+
+	Major update:
+		- Added a crypt.py module to perform AES encryption/decryption of strings
+		which I decided to use in encrypting the current date on the system.
+		The idea is as follows:
+			The sender of the request will add the encrypted date with the path,
+			for example GET https://<server url>:8080/user/<username>/<encrypted string>.
+			When the Server receives the request, it encrypts the string and checks whether
+			the date parameters are current (compares to current date).
+			
+			This accomplishes two thnigs:
+				- verifies that the requestor is legitimate, i.e. the reqeust is coming from 
+				either the Client or from the App.
+				
+				- makes the request time-sensitive, which guards against replay-attacks and
+				imposter requests.
+			Whether it is the best way to add and additional layer of security, I do not know
+			but at this time I think it's a decent idea.
+			
+			Possible issues:
+				- the Client and/or app are in different time-zones, which will clearly makes
+				this more of a hassle and require a possible addition to the database with the
+				time-zone (or similarly silly solution).
+				
+				For our purposes, however, and in this stage, this won't be an issue.
+				- added more dependencies to the Server, which isn't that great as some of
+				these will have to also transfer over to the Client and App...
+			
+				- makes testing a pain in the a** since I'm currently sending requests with
+				cURL. I've commented out the minutes and seconds comparisons to alleviate
+				the extreme pain. :)
+			
+		- Cleaned up various aspects of the functionality, in particular the request 
+		verification. Split a couple of functions up and created a couple of new ones, all 
+		pretty self-explanatory but I'll discuss them below.
+		
+		- New functions include:
+			- validate_params() to perform the path validation by request method. It will
+			call the functions validating the encrypted message as well.
+			- triggerr_secret_validation() to call the function that validates the username,
+			since this was previously done in separate places -- not sexy.
+			- validate_sender() to perform the secret decryption and comparison, thus making
+			sure the sender is indeed a good guy.
+			- validate_decrypted_msg() to avoid crashes if someone tries to inject a secret
+			that is of the wrong format, very important stuff!
+			
+		- Added comments to make it easier for other to understand how things work... is
+		anyone even reading this? :/ No one seems interested in contributing to the Server, 
+		so perhaps the comments are useless for others. At least it will allow me to better
+		keep track of what I did if I decide to return to this code down the line.
+			
+
 5-17-16 10:43pm:
 	The flow is as follows:
 		- Request comes in which calls the dataReceived() functnion to
