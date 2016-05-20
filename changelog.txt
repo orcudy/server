@@ -1,5 +1,39 @@
 Changelog:
 
+5-19-16 11:27pm:
+	Note: I've temporarily commented out trigger_verification() because testing is a major
+		hassle. 
+	
+	Update:
+		- Added gen_token() that generates a random string with letters and numbers.
+		It uses all letters, upper and lower case, for extra awesomeness!
+		- "Converted" send_POST() to send an HTTP/2.0 POST request, rather than the 
+		previously HTTP/1.1 mostly for consistency -- back to full-on HTTP/2.0!
+		- It seems different members of our team have different ideas about the way
+		in which the Client, Server, and App should interact, so I'm in the process of
+		changing things. To that effect, the following will likely happen:
+			- I've converted the handle_GET() to call the send_POST() method when a
+			request arrives with valid username. The POST will/should be sent to the
+			APN but currently I'm just sending it to http2bin.org because they've
+			set it up to return the request they received and I can thus verify that I'm
+			sending the right stuff.
+			- In the response to the GET request I'm not returning only the token of
+			the specified user, since returning the username is pointless.
+			- I will have to remove the extra POST functionality I had originally 
+			started implementing, such as the /login, /success, /failure because we won't
+			be using it. This is fine, I suppose.
+			
+		The new idea is as follows:
+			- Client sends POST to Server to register new user. 
+			- Server calls APN and returns the random token.
+			- APN notifies user.
+			- User accepts and the App sends a POST directly to the Client ? to inform of
+			successful login.
+			- Client should wait some time and if App does not respond it will forbid 
+			login to the site.
+			
+		Makes sense. We'll see what happens.
+
 5-18-16 9:41pm:
 	NOTE: I haven't yet pushed this version to the droplet, will probably do it tomorrow
 		so that I can more thoroughly test it up there (due to the secret functionality

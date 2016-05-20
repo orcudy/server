@@ -15,7 +15,7 @@ from OpenSSL import crypto
 from twisted.internet.defer import Deferred, inlineCallbacks
 from twisted.internet.protocol import Protocol, Factory
 from twisted.internet import endpoints
-from twisted.internet import reactor, ssl
+from twisted.internet import reactor, ssl, defer
 from h2.connection import H2Connection
 from h2.events import (
     RequestReceived, DataReceived, StreamEnded, WindowUpdated
@@ -32,7 +32,12 @@ import requests
 import crypt
 from datetime import datetime
 from dateutil.parser import parse
+import random
+import string
 
+import time
+
+from hyper import HTTPConnection
 
 RequestData = collections.namedtuple('RequestData', ['headers', 'data'])
 
@@ -53,7 +58,11 @@ class H2Protocol(Protocol):
         self.cipher_key = 'f456a56b567f4094ccd45745f063a465'
 
         # this hard-coded URL simulates the Client address
-        self.url = 'https://httpbin.org/post' 
+        # http/1.1
+        # self.url = 'https://httpbin.org/post'
+        
+        # http/2.0
+        self.url = 'https://httpbin.org'
         
         # hard-coded values to send in success/failure POST
         self.post_data_success = '{"user":"bro","login":"success"}'
@@ -212,8 +221,16 @@ class H2Protocol(Protocol):
     #   Sends the sender secret to be validated        #
     # ================================================ #
     def trigger_secret_validation(self, param):
-        state = self.validate_sender(param)
-        print "state =", state
+        
+        #####################################
+        # UNCOMMENT LINE BELOW TO ENABLE 
+        # (and remove the state = True, duh)
+        #####################################
+        
+        # state = self.validate_sender(param)
+        state = True
+        
+        #print "state =", state
         
         if not state:
             print "Bad sender secret msg!"
@@ -228,7 +245,7 @@ class H2Protocol(Protocol):
         
         # Decrypt the secret message
         plain = c.decrypt(secret)
-        print "Decrypted Message =", plain
+        #print "Decrypted Message =", plain
 
         # Validate secret message before parsing
         if not self.validate_decrypted_msg(plain):
@@ -246,7 +263,7 @@ class H2Protocol(Protocol):
 
         # Get current time to compare with secret
         curr_time = datetime.now()
-        print "Current time =", str(curr_time)
+        #print "Current time =", str(curr_time)
 
         try:
             new_year = parse(str(curr_time)).year
@@ -313,7 +330,7 @@ class H2Protocol(Protocol):
                 stream_data.data.write(data)
             
             try:
-                jdata = json.loads(data)                
+                jdata = json.loads(data)
                 
                 print "  username: " + jdata["username"]
                 print "  email: " + jdata["email"]
@@ -325,10 +342,20 @@ class H2Protocol(Protocol):
                     self.error = True
                     return                
                 
+                # generate random token to identify user by
+                else: 
+                    token = self.gen_token()
+                    jdata["token"] = token
+                    print "    Adding token '%s' to jdata." % token
+                    print "    Result:", json.dumps(jdata)
+                    
+                ### SHOULD WE SEND THE TOKEN TO THE CLIENT TO USE IN THE FUTURE?
+                ### Perhaps that's excessive?
+                ### the send_POST() can be called from here though.             
+                
                 self.db_set(jdata, stream_id)
             except KeyError:
-                print "=-=-= Invalid POST with register!"
-    #            self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)            
+                print "=-=-= Invalid POST with register!"            
                 pass
 
         #########################################
@@ -377,12 +404,13 @@ class H2Protocol(Protocol):
 
         ####################################################
         # THIS IS WHERE WE RETURN LOGIN SUCCESS TO CLIENT  #
-        # using a POST to the Client with a 'success' str  #
+        # using a POST to the Client with a 'success' path #
         ####################################################   
         elif 'success' in self.post_type:
             print "...SUCCESSFUL login for user!"
-            self.send_POST(self.post_data_success)        
-            self.success = True   
+            #self.send_POST(self.post_data_success)    
+            self.success = True
+
             
         elif 'failure' in self.post_type:
             print "...FAILED login for user!"            
@@ -397,44 +425,75 @@ class H2Protocol(Protocol):
     #   POST request to notify Client of user's        #
     #   successful or failed login attempt             #
     # ================================================ #
-    def send_POST(self, response):
-        hdrs = {'Content-type': 'application/json', 'Accept': 'text/plain'}
-        request = requests.post(self.url, data=response, headers=hdrs)
-        status = request.status_code
-        jdata = json.dumps(request.json())
+    def send_POST(self, response):  
+        ###### HTTP/1.1 with requests ######
+#        hdrs = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+#        request = requests.post(self.url, data=response, headers=hdrs)
+#        status = request.status_code
+#        jdata = json.dumps(request.json())
         
-        print "    Status code = ", status
-        print "    Data: ", jdata
+#        print "    << Status code = ", status
+#        print "    << Data: ", jdata
+#        return status        
+
+        ##### HTTTP/2.0 POST #####
+        c = HTTPConnection('http2bin.org')
+        c.request('POST', '/post', body=response)
+        resp = c.get_response()
+        
+        #print resp.read()        
+        return (resp.status)
         
     # ================================================ #
     #   Handle GET requests                            #
     # ================================================ #    
-    def handle_GET(self, uname, stream_id):                 
-            if uname:
-                to_send = self.db_get(uname)
-                
-                print "about to send %s" % to_send
-                request_data = self.stream_data[stream_id]
-                self.s_body = to_send
-                print "-->", json.loads(self.s_body)
-            
-                try:
-                    stream_data = self.stream_data[stream_id]
-                except KeyError:
-                    print "GET KeyError..."
-                    self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
-                else:
-                    stream_data.data.write(to_send)
-#            else:
-#                print "=== NO username provided!"
-#                self.error = True
-#                return
-            else:
-                print "=== Invalid username provided!"
-                self.error = True
-                return    
-            
-            print "GET complete."
+    def handle_GET(self, uname, stream_id):
+		print "in handle_GET with %s" % uname             
+		if uname:
+#                to_send = self.db_get(uname)
+			to_send = self.db_get_user_token(uname)
+			
+			print "    >> about to send %s" % to_send
+			request_data = self.stream_data[stream_id]
+			self.s_body = to_send
+			#print "    >> loaded:", json.loads(self.s_body)
+		
+			try:
+				stream_data = self.stream_data[stream_id]
+			except KeyError:
+				print "GET KeyError..."
+				self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
+			else:
+
+				##########################################
+				##########################################
+				# send POST to APN
+				# if APP POSTS 'success' we respond to the 
+				# GET with 'success'
+				# else we respond with 'failure'
+				##########################################
+				##########################################
+
+				# Send POST with TOKEN to the APN
+				post_status = self.send_POST(to_send)
+				
+				
+				if post_status == 200:
+					print "    data POST-ed successfully"
+				else:
+					print "    data POST failed with status %d!" % post_status
+					self.error = True
+					return
+				
+				# Send the response to the GET request
+				stream_data.data.write(to_send)
+
+		else:
+			print "=== Invalid username provided!"
+			self.error = True
+			return    
+		
+		print "GET complete."
 
     # ================================================ #
     #   This is where POST data is received and we     #
@@ -477,7 +536,6 @@ class H2Protocol(Protocol):
         elif self.success or self.failure:
             print "   success/failure flag, return 200"
             data = ''
-
         else:
             try:
                 request_data = self.stream_data[stream_id]
@@ -604,12 +662,39 @@ class H2Protocol(Protocol):
         except:
             print "Error fetching data..."
         
-        print "Values obtained from database, token = ", res[0][0]
+        print "    Status obtained from database, token = ", res[0][0]
 
         # Specify what to return for GET requests
         # in this case, return username and token for the user
         jstr = {}
         jstr['username'] = data
+        jstr['token'] = res[0][0]
+        jstr_data = json.dumps(jstr)
+        return jstr_data
+
+
+    # ================================================ #
+    #   Get user token from database for APN POST      #
+    # ================================================ #
+    def db_get_user_token(self, data):
+        
+        print "in db_get_user_token with username '%s'" % data
+            
+        try:
+            db, cursor = self.db_open()
+            
+            # Query database for token
+            cursor.execute("SELECT id_token FROM Users WHERE username= %s ", (data,))
+            res = cursor.fetchall()
+            self.db_close(db)
+        except:
+            print "    Error fetching data..."
+        
+        print "    Values obtained from database, token = ", res[0][0]
+
+        # Specify what to return for GET requests
+        # in this case, return username and token for the user
+        jstr = {}
         jstr['token'] = res[0][0]
         jstr_data = json.dumps(jstr)
         return jstr_data
@@ -650,6 +735,16 @@ class H2Protocol(Protocol):
             ('server', 'TwoEfAy'),
         ]
         self.conn.send_headers(stream_id, response_headers, end_stream=True)
+
+    # ================================================ #
+    #   Generate random token to identify user by      #
+    # ================================================ #
+    def gen_token(self):
+        # Use all digits and letters to choose from
+        seed = string.letters + string.digits
+        
+        return ''.join(random.choice(seed) for i in xrange(16))
+
 
 # ================================================ #
 #   Setup the H2 factory for the HTTP/2.0 protocol #

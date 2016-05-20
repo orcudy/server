@@ -72,6 +72,7 @@ curl --http2 https://httpbin.org/get
 > within your database, and provided the correct database info and credentials 
 > in the **db_set** and **db_get** functions, you'll be able to register a user
 > **sexy** via a POST with the following request:
+
 ```sh
 curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"sexy","email":"whatever@some.com","token":"3498573984579348"}' https://localhost:8080/register/<encrypted string>
 ```
@@ -109,7 +110,7 @@ curl --http2 https://45.55.160.135:8080/user/sexy/<encrypted string>
 
 The above get should return a JSON of the form
 ```
-{"usernae": "sexy", "token":"3498573984579348"}
+{"username": "sexy", "token":"3498573984579348"}
 ```
 
 #### Note on _encrypted string_:
