@@ -58,10 +58,6 @@ class H2Protocol(Protocol):
         self.cipher_key = 'f456a56b567f4094ccd45745f063a465'
 
         # this hard-coded URL simulates the Client address
-        # http/1.1
-        # self.url = 'https://httpbin.org/post'
-        
-        # http/2.0
         self.url = 'https://httpbin.org'
         
         # hard-coded values to send in success/failure POST
@@ -95,30 +91,23 @@ class H2Protocol(Protocol):
     def requestReceived(self, headers, stream_id):
         # Read in request headers
         headers = collections.OrderedDict(headers)
+        self.method_type = headers[':method']
 
         # Return 405 status if user sends anything other than GET or POST
-        if headers[':method'] not in ('GET', 'POST'):
+        if self.method_type not in ('GET', 'POST'):
             self.return_XXX('405', stream_id)
-            print "Unsupported method '%s'" % method
+            print "Unsupported method '%s'" % self.method_type
             self.invalid_method = True
             return
-        
-        self.method_type = headers[':method']
+
         path = headers[':path'].lstrip('/')
         print "Given path: ", path
-                        
-        # Return 404 status if empty request path
-        if not path:
-            print "Nothing to fetch in path '%s'" % path
+        
+        if not self.validate_params(path):
+            print "Params are wrong."
             self.error = True
             return
-        else:
-            # Return 404 if request has invalid parameters
-            if not self.validate_params(path):
-                print "Params are wrong."
-                self.error = True
-                return
- 
+        
         # Read data sent with request
         request_data = RequestData(headers, io.BytesIO())
         self.stream_data[stream_id] = request_data 
@@ -127,6 +116,7 @@ class H2Protocol(Protocol):
         if self.method_type == 'GET':
             print '-- RECEIVED GET' 
             self.handle_GET(self.uname, stream_id)
+        
         # POST will be handled in dataFrameReceived       
         elif self.method_type == 'POST':
             print '-- RECEIVED POST'    
@@ -138,9 +128,15 @@ class H2Protocol(Protocol):
     #   Validate request parameters before processing  #
     # ================================================ #
     def validate_params(self, path):
-        MAX_GET_PARAMS = 3
-        MAX_POST_PARAMS = 2
-    
+        MAX_GET_PARAMS = 2
+        MAX_POST_PARAMS = 1
+                    
+        # Return 404 status if empty request path
+        if not path:
+            print "Nothing to fetch in path '%s'" % path
+            self.error = True
+            return
+        
         param_list = path.split('/')
         num_params = len(path.split('/'))
         print "Param#:", num_params
@@ -171,9 +167,9 @@ class H2Protocol(Protocol):
                     return False
                 
                 ##### validate secret #####
-                secret_validated = self.trigger_secret_validation(param_list[2])
-                if not secret_validated:
-                    return False                   
+#                secret_validated = self.trigger_secret_validation(param_list[2])
+#                if not secret_validated:
+#                    return False                   
                 
                 # store the validated username
                 self.uname = param_list[1]
@@ -190,19 +186,22 @@ class H2Protocol(Protocol):
                 return False
 
             ##### validate secret #####
-            secret_validated = self.trigger_secret_validation(param_list[1])
-            if not secret_validated:
-                return False
+#            secret_validated = self.trigger_secret_validation(param_list[1])
+#            if not secret_validated:
+#                return False
+            ### REMEMBER: if you uncomment this validate secret code above,
+            ### you also need to change the number of params allowed at the top
+            ### -- increase by 1!
             
             ##### check post type #####
             if param_list[0] == 'register':
                 print "REGISTER new user!"
-                self.post_type = 'register'
-            elif param_list[0] == 'update':
-                print "UPDATE user token!"
-                self.post_type = 'update'
+                self.post_type = 'register'             
+            elif param_list[0] == 'verify':
+                print "VERIFY new user!"
+                self.post_type = 'verify'            
             elif param_list[0] == 'login':
-                print "LOG IN!"
+                print "LOG IN user!"
                 self.post_type = 'login'
             elif param_list[0] == 'success':
                 print "SUCCESSFUL login!"
@@ -220,17 +219,9 @@ class H2Protocol(Protocol):
     # ================================================ #
     #   Sends the sender secret to be validated        #
     # ================================================ #
-    def trigger_secret_validation(self, param):
-        
-        #####################################
-        # UNCOMMENT LINE BELOW TO ENABLE 
-        # (and remove the state = True, duh)
-        #####################################
-        
-        # state = self.validate_sender(param)
-        state = True
-        
-        #print "state =", state
+    def trigger_secret_validation(self, param):        
+        state = self.validate_sender(param)        
+        print "state =", state
         
         if not state:
             print "Bad sender secret msg!"
@@ -312,29 +303,35 @@ class H2Protocol(Protocol):
         return True
     
     # ================================================ #
+    #   Try reading data from stream or reset it       #
+    # ================================================ #    
+    def get_stream_data(self, data, stream_id):
+    
+        try:
+            stream_data = self.stream_data[stream_id]
+        except KeyError:
+            self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
+        else:
+            stream_data.data.write(data)
+    
+    # ================================================ #
     #   Handle POST requests                           #
     # ================================================ #    
     def handle_POST(self, data, stream_id):
         
-        #########################################
-        # THIS OCCURS WHEN USER FIRST REGISTERS #
-        #########################################    
+        #===============================================================
+        # THIS OCCURS WHEN CLIENT FIRST REGISTERS NEW USER WITH SERVER #
+        #===============================================================
         if 'register' in self.post_type:
             print "...REGISTER new user!"
 
-            try:
-                stream_data = self.stream_data[stream_id]
-            except KeyError:
-                self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
-            else:
-                stream_data.data.write(data)
+            self.get_stream_data(data, stream_id) 
             
             try:
                 jdata = json.loads(data)
                 
-                print "  username: " + jdata["username"]
-                print "  email: " + jdata["email"]
-                print "  token: " + jdata["token"]
+                print "    username: " + jdata["username"]
+                print "    email: " + jdata["email"]
                 
                 # if user is already registered, the POST should fail
                 if self.db_validate(jdata["username"]) is not None:
@@ -342,46 +339,53 @@ class H2Protocol(Protocol):
                     self.error = True
                     return                
                 
-                # generate random token to identify user by
-                else: 
+                else:
+                    # generate random token
                     token = self.gen_token()
-                    jdata["token"] = token
+
+                    # add token to JSON string
+                    jdata.update({'token':str(token)})
+
                     print "    Adding token '%s' to jdata." % token
                     print "    Result:", json.dumps(jdata)
-                    
-                ### SHOULD WE SEND THE TOKEN TO THE CLIENT TO USE IN THE FUTURE?
-                ### Perhaps that's excessive?
-                ### the send_POST() can be called from here though.             
+
+                    # write user data in database
+                    self.db_set(jdata, stream_id) 
+                                       
+                    print "    Removing 'email' from JSON..."
+                    jdata.pop('email')
+                    print "    JSON to be POST-ed:", json.dumps(jdata)
                 
-                self.db_set(jdata, stream_id)
+                    # Send POST with TOKEN to Client
+                    # - the Client displays the token to the User
+                    # so the user can use it to register with the App.
+                    # - the App will then use that token to communicate
+                    # with the Server (instead of a username)
+                    self.send_POST(json.dumps(jdata))
+                
             except KeyError:
                 print "=-=-= Invalid POST with register!"            
                 pass
 
-        #########################################
-        # THIS OCCURS WHEN USER IS VERIFIED     #
-        ######################################### 
-        if 'update' in self.post_type:
-            print "...UPDATE new user's TOKEN!"
+        #==================================================================#
+        # THIS OCCURS WHEN USER REGISTERS ON THE APP AND THE APP VERIFIES  #
+        # USER WITH THE SERVER                                             #
+        #==================================================================#
+        elif 'verify' in self.post_type:
+            print "...VERIFY new user with App!"
 
-            try:
-                stream_data = self.stream_data[stream_id]
-            except KeyError:
-                self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
-            else:
-                stream_data.data.write(data)
+            self.get_stream_data(data, stream_id) 
 
             try:
                 jdata = json.loads(data)                
                 
-                print "  username: " + jdata["username"]
-                print "  email: " + jdata["email"]
-                print "  token: " + jdata["token"]
+                print "    id_token: " + jdata["id_token"]
+                print "    dev_token: " + jdata["dev_token"]
                 
-                # if user is not registered, the POST should fail
-                if self.db_validate(jdata["username"]) is not None:
-                    print "    USER FOUND!"
-                    self.db_update(jdata, stream_id)
+                # if user token is not in DB, the POST should fail
+                if self.db_validate_token(jdata["id_token"]) is not None:
+                    print "    USER TOKEN FOUND!"
+                    self.db_update_token(jdata, stream_id)
                     
                 else:
                     print "    CAN'T UPDATE NON-EXISTENT USER!"
@@ -389,34 +393,126 @@ class H2Protocol(Protocol):
                     return                
 
             except KeyError:
-                print "=-=-= Invalid POST with update!"           
+                print "=-=-= Invalid POST with verify!"           
                 pass
                 
-        ########################################
+        #=======================================
         # THIS IS WHERE WE SHOULD CALL THE APN #
-        ########################################   
+        #=======================================   
         elif 'login' in self.post_type:
-            print "...LOG IN user!"
-            
-            # NOT YET IMPLEMENTED
-            self.error = True
-            return
+            print "...LOG IN user into Client!"
 
-        ####################################################
-        # THIS IS WHERE WE RETURN LOGIN SUCCESS TO CLIENT  #
-        # using a POST to the Client with a 'success' path #
-        ####################################################   
+            self.get_stream_data(data, stream_id) 
+
+            try:
+                jdata = json.loads(data)                
+                print "    token: " + jdata["token"]
+                
+                # if user token is not in DB, the POST should fail
+                if self.db_validate_token(jdata["token"]) is not None:
+                    print "    USER TOKEN FOUND!"
+
+                    #################################################
+                    # Send POST with TOKEN to APN
+                    # - APN notifies User
+                    # - User authenticates (or doesn't)
+                    # - App notifies Server of success/failure
+                    #################################################
+                    
+                    # This is a POST-request to httpbin.org
+                    # Need actual call to APN
+                    self.send_POST(json.dumps(jdata))
+                    
+                else:
+                    print "    CAN'T LOGIN NON-EXISTENT USER!"
+                    self.error = True
+                    return                
+
+            except KeyError:
+                print "=-=-= Invalid POST with login!"           
+                pass
+
+        #===================================================
+        # We receive POST from App with 'success'/'failure'#
+        # and we return login 'success' or 'failure' POST  #
+        # to the Client                                    #
+        #===================================================   
         elif 'success' in self.post_type:
-            print "...SUCCESSFUL login for user!"
-            #self.send_POST(self.post_data_success)    
+            print "...SUCCESSFUL login for user!"   
             self.success = True
+            
+            self.get_stream_data(data, stream_id)
+
+            try:
+                jdata = json.loads(data)                
+                print "    token: " + jdata["token"]
+                
+                # if user token is not in DB, the POST should fail
+                if self.db_validate_token(jdata["token"]) is not None:
+                    print "    USER TOKEN FOUND!"
+
+                    # add {'login':'success'} to the return JSON
+                    jdata.update({'login':self.post_type})
+
+                    print "    Adding login '%s' to jdata." % self.post_type
+                    print "    Result:", json.dumps(jdata)
+                    
+                    #################################################
+                    # Received 'success' from the App for a user,
+                    # so send POST with login status to the Client
+                    #################################################
+                    
+                    # This is a POST-request to httpbin.org
+                    # Need actual URL for Client
+                    self.send_POST(json.dumps(jdata))
+                    
+                else:
+                    print "    CAN'T SUCCEED FOR NON-EXISTENT USER!"
+                    self.error = True
+                    return                
+
+            except KeyError:
+                print "=-=-= Invalid POST with success!"           
+                pass            
 
             
         elif 'failure' in self.post_type:
-            print "...FAILED login for user!"            
-            self.send_POST(self.post_data_failure)        
+            print "...FAILED login for user!"                 
             self.failure = True
             
+            self.get_stream_data(data, stream_id)
+
+            try:
+                jdata = json.loads(data)                
+                print "    token: " + jdata["token"]
+                
+                # if user token is not in DB, the POST should fail
+                if self.db_validate_token(jdata["token"]) is not None:
+                    print "    USER TOKEN FOUND!"
+
+                    # add {'login':'success'} to the return JSON
+                    jdata.update({'login':self.post_type})
+
+                    print "    Adding login '%s' to jdata." % self.post_type
+                    print "    Result:", json.dumps(jdata)
+                    #################################################
+                    # Received 'failure' from the App for a user,
+                    # so send POST with login status to the Client
+                    #################################################
+                    
+                    # This is a POST-request to httpbin.org
+                    # Need actual URL for Client
+                    self.send_POST(json.dumps(jdata))
+                    
+                else:
+                    print "    CAN'T FAIL FOR NON-EXISTENT USER!"
+                    self.error = True
+                    return                
+
+            except KeyError:
+                print "=-=-= Invalid POST with failure!"           
+                pass            
+ 
         print "POST complete."
 
     # ================================================ #
@@ -425,75 +521,64 @@ class H2Protocol(Protocol):
     #   POST request to notify Client of user's        #
     #   successful or failed login attempt             #
     # ================================================ #
-    def send_POST(self, response):  
-        ###### HTTP/1.1 with requests ######
-#        hdrs = {'Content-type': 'application/json', 'Accept': 'text/plain'}
-#        request = requests.post(self.url, data=response, headers=hdrs)
-#        status = request.status_code
-#        jdata = json.dumps(request.json())
-        
-#        print "    << Status code = ", status
-#        print "    << Data: ", jdata
-#        return status        
-
-        ##### HTTTP/2.0 POST #####
+    def send_POST(self, response):        
         c = HTTPConnection('http2bin.org')
         c.request('POST', '/post', body=response)
         resp = c.get_response()
         
-        #print resp.read()        
-        return (resp.status)
+        # If you wish to see what was POST-ed, uncomment line below
+        print resp.read()        
+        #return (resp.status)
+        
+        if resp.status == 200:
+            print "    JSON POST-ed successfully"
+        else:
+            print "    JSON POST failed with status %d!" % resp.status
+            self.error = True
+            return
         
     # ================================================ #
     #   Handle GET requests                            #
     # ================================================ #    
     def handle_GET(self, uname, stream_id):
-		print "in handle_GET with %s" % uname             
-		if uname:
-#                to_send = self.db_get(uname)
-			to_send = self.db_get_user_token(uname)
-			
-			print "    >> about to send %s" % to_send
-			request_data = self.stream_data[stream_id]
-			self.s_body = to_send
-			#print "    >> loaded:", json.loads(self.s_body)
-		
-			try:
-				stream_data = self.stream_data[stream_id]
-			except KeyError:
-				print "GET KeyError..."
-				self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
-			else:
+            print "in handle_GET with %s" % uname             
+            if uname:
+                to_send = self.db_get_user_token(uname)
+                
+                print "    >> about to send %s" % to_send
+                request_data = self.stream_data[stream_id]
+                self.s_body = to_send
+                #print "    >> loaded:", json.loads(self.s_body)
+            
+                try:
+                    stream_data = self.stream_data[stream_id]
+                except KeyError:
+                    print "GET KeyError..."
+                    self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
+                else:
 
-				##########################################
-				##########################################
-				# send POST to APN
-				# if APP POSTS 'success' we respond to the 
-				# GET with 'success'
-				# else we respond with 'failure'
-				##########################################
-				##########################################
+                    ########################################################
+                    ########################################################
+                    # THIS WAS INITIAL IMPLEMENTATION -- NOT VALID ANYMORE
+                    # send POST to APN
+                    # if APP POSTS 'success' we respond to the 
+                    # GET with 'success'
+                    # else we respond with 'failure'
+                    ########################################################
+                    ########################################################
 
-				# Send POST with TOKEN to the APN
-				post_status = self.send_POST(to_send)
-				
-				
-				if post_status == 200:
-					print "    data POST-ed successfully"
-				else:
-					print "    data POST failed with status %d!" % post_status
-					self.error = True
-					return
-				
-				# Send the response to the GET request
-				stream_data.data.write(to_send)
+                    # Send POST with TOKEN to the APN
+                    self.send_POST(to_send)
+                  
+                    # Send the response to the GET request
+                    stream_data.data.write(to_send)
 
-		else:
-			print "=== Invalid username provided!"
-			self.error = True
-			return    
-		
-		print "GET complete."
+            else:
+                print "=== Invalid username provided!"
+                self.error = True
+                return    
+            
+            print "GET complete."
 
     # ================================================ #
     #   This is where POST data is received and we     #
@@ -597,6 +682,28 @@ class H2Protocol(Protocol):
             print "--> FETCHED:", has_it[0]
 
         return has_it[0]
+
+    # ================================================ #
+    #   Check whether user token is in the database    #
+    # ================================================ #
+    def db_validate_token(self, token):
+        db, cursor = self.db_open()
+
+        # Query database for username
+        cursor.execute(
+            "SELECT id_token, COUNT(*) FROM Users WHERE id_token='%s' " % token
+        )        
+
+        has_it = cursor.fetchone()
+        self.db_close(db)
+
+        # if user is not found, the GET should fail
+        if has_it[0] is None:
+            print "    NOT IN DB!"
+        else:
+            print "--> FETCHED:", has_it[0]
+
+        return has_it[0]
         
     # ================================================ #
     #   Register the user in the database              #
@@ -607,8 +714,8 @@ class H2Protocol(Protocol):
         print "in db_set, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
         
         # Insert values into database 
-        sql = "INSERT INTO Users (username, email, id_token) VALUES ('%s', '%s', '%s')" % \
-             (dat["username"], dat["email"], dat["token"])
+        sql = "INSERT INTO Users (username, email, id_token, dev_token) VALUES ('%s', '%s', '%s', '%s')" % \
+             (dat["username"], dat["email"], dat["token"], '')
         
         try:
             cursor.execute(sql)
@@ -627,7 +734,7 @@ class H2Protocol(Protocol):
     def db_update(self, dat, stream_id):
         db, cursor = self.db_open()
 
-        print "in db_set, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
+        print "in db_update, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
         
         # Update values in database 
         sql = 'UPDATE Users SET id_token="%s" WHERE username="%s" ' % (dat["token"], dat["username"])
@@ -642,6 +749,30 @@ class H2Protocol(Protocol):
             db.rollback()
             print "Error inserting, rolling back..."
             print "409 Conflict, Invalid POST -- entry already in database?"
+            
+        self.db_close(db)
+
+    # ================================================ #
+    #   Update the device dev_token in the database    #
+    # ================================================ #
+    def db_update_token(self, dat, stream_id):
+        db, cursor = self.db_open()
+
+        print "in db_update_token, values %s %s" % (dat["id_token"], dat["dev_token"])
+        
+        # Update values in database 
+        sql = 'UPDATE Users SET dev_token="%s" WHERE id_token="%s" ' % (dat["dev_token"], dat["id_token"])
+        
+        print "UPDATING dev_token"
+        
+        try:
+            cursor.execute(sql)
+            db.commit()
+            print "    New token value '%s' inserted into database." % dat["dev_token"]
+        except:
+            db.rollback()
+            print "Error inserting, rolling back..."
+            print "409 Conflict -- entry already in database?"
             
         self.db_close(db)
 
@@ -744,7 +875,6 @@ class H2Protocol(Protocol):
         seed = string.letters + string.digits
         
         return ''.join(random.choice(seed) for i in xrange(16))
-
 
 # ================================================ #
 #   Setup the H2 factory for the HTTP/2.0 protocol #

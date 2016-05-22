@@ -1,5 +1,122 @@
 Changelog:
 
+5-21-16 9:51pm:
+	Major update:
+		- Renamed /update to /verify and changed the underlying implementation of it, which
+		also necessitated the creation of db_validate_token() and db_update_token.
+		- Implemented /login, /success, and /failure POST requests (will elaborate below).
+		- Implementation of the above requests necessitated changes to the database, so
+		I made a few significant changes (will elaborate below).
+		- Minor cleaning up but A LOT MORE is needed as currently the /success and /failure
+		requests use practically identical code but I have different print statements in
+		each that I use to monitor their success, so combining them into one will happen
+		soon.
+
+	On the implementation of /verify:
+		The /verify POST request is the finishing step of user verification. First, the
+		user registers with the Client site, which sends a /register POST to the Server,
+		which, saves the provided username and email:
+			{'username':'<username>','email':'<email>'}
+		The server generates a random id_token and POSTs it back to the Client with a 
+		/register POST containing the username and id_token:
+			{'username':'<username>','id_token':'<id_token>'} 
+		The Client displays the id_token to the user. 
+		The user installs the App and enters the id_token to verify his identity. 
+		The App sends the /verify POST request to the Server which contains a JSON with the 
+		id_token AND the dev_token (device token of the phone):
+			{'id_token':'<id_token>','dev_token':'<dev_token>'} 
+		The Server then stores the dev_token in the database and thus the circle is complete.
+		Now the Server can use the dev_token to send notifications to the user's phone via POST
+		requests to the APN. 
+	
+	On the implementation of /login, /success, and /failure:
+		After the above "circle" is complete, the user must then authenticate upon login into
+		the Client site.
+		When the user logs in, the Client sends the Server a /login POST request with the
+		id_token:
+			{'id_token':'<id_token>'}
+		The Server looks up the dev_token and sends a POST request to APN to generate
+		a notification to the user's phone. 
+		The user authenticates (or fails to do so) and the App sends a POST to the Server 
+		with /success or /failure and a JSON with the id_token:
+			{'id_token':'<id_token>'}
+		The Server in turn sends a POST to the Client with a JSON containing the id_token and a
+		login success/failure field, that is:
+			{'id_token':'<id_token>','login':'success'}
+		or
+			{'id_token':'<id_token>','login':'failure'}
+	
+	On the database changes:
+		Now, the database was altered to have an additional column for the dev_token.
+		Since the Server must be able to locate a user by id_token, I also had to make
+		id_token a primary key (up until now only username was a key).
+		
+		How I made the changes on Chris's droplet:
+		
+		mysql> select * from Users;
+		+-----------+--------------------+----------------------+
+		| username  | email              | id_token             |
+		+-----------+--------------------+----------------------+
+		| bro       | bro@email.com      | 76545246587232       |
+		| isThisOn? | blsssa@example.com | 3IYsBH6wDEyVCZfn     |
+		| sexy      | sexy@email.com     | 23472                |
+		| something | bla@example.com    | 234h38fKW0dje238E    |
+		| tester    | tester@email.com   | 4535343              |
+		| testuser  | test@email.com     | 23598745434943758438 |
+		+-----------+--------------------+----------------------+
+		6 rows in set (0.00 sec)
+
+		mysql> ALTER TABLE Users ADD dev_token VARCHAR(80) AFTER id_token;
+		Query OK, 0 rows affected (0.08 sec)
+		Records: 0  Duplicates: 0  Warnings: 0
+
+		mysql> select * from Users;
+		+-----------+--------------------+----------------------+-----------+
+		| username  | email              | id_token             | dev_token |
+		+-----------+--------------------+----------------------+-----------+
+		| bro       | bro@email.com      | 76545246587232       | NULL      |
+		| isThisOn? | blsssa@example.com | 3IYsBH6wDEyVCZfn     | NULL      |
+		| sexy      | sexy@email.com     | 23472                | NULL      |
+		| something | bla@example.com    | 234h38fKW0dje238E    | NULL      |
+		| tester    | tester@email.com   | 4535343              | NULL      |
+		| testuser  | test@email.com     | 23598745434943758438 | NULL      |
+		+-----------+--------------------+----------------------+-----------+
+		6 rows in set (0.00 sec)
+
+		mysql> SHOW INDEX FROM cs130.Users;
+		+-------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+		| Table | Non_unique | Key_name | Seq_in_index | Column_name | Collation | Cardinality | Sub_part | Packed | Null | Index_type | Comment | Index_comment |
+		+-------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+		| Users |          0 | PRIMARY  |            1 | username    | A         |           6 |     NULL | NULL   |      | BTREE      |         |               |
+		| Users |          0 | username |            1 | username    | A         |           6 |     NULL | NULL   |      | BTREE      |         |               |
+		| Users |          0 | email    |            1 | email       | A         |           6 |     NULL | NULL   |      | BTREE      |         |               |
+		+-------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+		3 rows in set (0.00 sec)
+
+		mysql> ALTER TABLE Users DROP PRIMARY KEY, ADD PRIMARY KEY(username, id_token);
+		Query OK, 6 rows affected (0.04 sec)
+		Records: 6  Duplicates: 0  Warnings: 0
+
+		mysql> SHOW INDEX FROM cs130.Users;
+		+-------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+		| Table | Non_unique | Key_name | Seq_in_index | Column_name | Collation | Cardinality | Sub_part | Packed | Null | Index_type | Comment | Index_comment |
+		+-------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+		| Users |          0 | PRIMARY  |            1 | username    | A         |           6 |     NULL | NULL   |      | BTREE      |         |               |
+		| Users |          0 | PRIMARY  |            2 | id_token    | A         |           6 |     NULL | NULL   |      | BTREE      |         |               |
+		| Users |          0 | username |            1 | username    | A         |           6 |     NULL | NULL   |      | BTREE      |         |               |
+		| Users |          0 | email    |            1 | email       | A         |           6 |     NULL | NULL   |      | BTREE      |         |               |
+		+-------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+		4 rows in set (0.00 sec)		
+	
+	
+5-20-16 11:10pm:
+	OK, I just got to San Diego and went to work on the Server, got annoyed that my cURL
+	requests weren't going through properly because of remnants of the commented-out
+	<encrypted string> code, so I commented out stuff further to simplify life.
+	At this stage in the game, it doesn't even look like we'll be using this extra safety
+	funtionality at all, so I won't suffer through testing it excessively.
+
+
 5-19-16 11:27pm:
 	Note: I've temporarily commented out trigger_verification() because testing is a major
 		hassle. 
