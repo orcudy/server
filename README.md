@@ -161,8 +161,8 @@ curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"sexy",
 ```
 
 **NOTE:** 
-If you get a error stating the certificate is self-signed and cannot be verified, then run cURL with the **-k** flag. 
-For example, to register user **dude** with email **anial@email.com** and IGNORE certificate security:
+If you get an error stating the certificate is self-signed and cannot be verified, then run cURL with the **-k** flag. 
+For example, to register user **dude** with email **animal@email.com** and IGNORE certificate security:
 ```sh
 curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"username":"dude", "email":"animal@email.com"}' https://localhost:8080/register
 ```
@@ -174,6 +174,11 @@ curl --http2 -k https://localhost:8080/user/sexy
 > Note: in the above GET request, we try to obtain info on a user **sexy**. 
 > Of course, this user has to be in your database before you can get a return
 > for this.
+
+The return for our droplet server would be the following JSON:
+```
+{"token":"23472"}
+```
 
 ===
 
@@ -202,9 +207,9 @@ curl --http2 -kv -H "Content-Type: application/json" -X POST -d '{"username":"cr
 curl --http2 -kv https://45.55.160.135:8080/user/crazy
 ```
 
-The above get should return a JSON of the form
+The above get should return a JSON of the form:
 ```
-{"username": "crazy", "token":"<some token>"}
+{"token":"<some token>"}
 ```
 
 #### App -> Server /verify POST:
@@ -223,6 +228,25 @@ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"3IYsBH
 curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"3IYsBH6wDEyVCZfn"}' https://localhost:8080/success
 curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"3IYsBH6wDEyVCZfn"}' https://localhost:8080/failure
 ```
+
+### Example:
+```sh
+ross@ubuntu:~$ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"username":"pastMyBedtime","email":"INeedSleep@example.com"}' https://45.55.160.135:8080/register
+
+ross@ubuntu:~$ curl --http2 -k https://45.55.160.135:8080/user/pastMyBedtime
+{"token": "oO1A92W7Yc4r3bEa"}
+
+ross@ubuntu:~$ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"id_token":"o01A92W7Yc4r3bEa","dev_token":"MyDevTokenLOL"}' https://45.55.160.135:8080/verify (**THIS FAILED BECAUSE I MISTYPED THE id_token, LOL!)
+ross@ubuntu:~$ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"id_token":"oO1A92W7Yc4r3bEa","dev_token":"MyDevTokenLOL"}' https://45.55.160.135:8080/verify
+
+ross@ubuntu:~$ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"oO1A92W7Yc4r3bEa"}' https://45.55.160.135:8080/success
+ross@ubuntu:~$ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"oO1A92W7Yc4r3bEa"}' https://45.55.160.135:8080/failure
+```
+All the POST requests above trigger POST requests on the server that should be 
+sent to various places but I'm currently sending all to https://httpbin.org/post,
+so I can verify that the Server POST requests contain the correct info. 
+They do. :)
+
 
 #### Note on _encrypted string_:
 The **crypto.py** module does the encryption and decryption. I call it within
