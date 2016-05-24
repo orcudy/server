@@ -1,5 +1,72 @@
 Changelog:
 
+5-23-16 8:57pm:
+	TODO: Combine all database functions into one, where each query is ran depending
+		on the result required! This will shave off quite a few lines of code and 
+		make it cleaner and much easier to follow!
+
+	I am hesitant to upload the code to the droplet because many of the emails currently
+	in our database have bogus email. So if one of my team-mates decided to POST a
+	/login request for one of those users, this won't work very well. I will add my own
+	email to the database though, so that can be tested with. Oh joy! I already have 20+
+	email just from testing this while implementing the email & OTP functionality. :)
+	
+	Major update:
+		- Generating one-time-password (OTP) via PyOTP (elaboration below).
+		- Sending emails with the OTP to "unverified" users (elaboration below).
+		- Created several new helper functions to assist in implementing the above
+		functionality. Those include:
+			- get_email(): takes in a user's id_token and calls db_get_user_email() to
+				obtain the user's email address, which it returns.
+			- db_get_user_email(): takes in the id_token and queries the database for 
+				the user's email which it returns
+			- db_get_user_dev_token(): takes in the id_token and queries the database
+				for the user's dev_token, which it returns.
+			- send_email(): takes in id_token, uses it to get the user's email, calls 
+				generate_OTP_code and sends an email to the user with that one-time-pass.
+				NOTE that while this works, it is time-sensitive, so it may not always be
+				very effective.
+			- generate_OTP_code(): takes no input and generates a one-time-password to email
+				to the unverified user.
+			- generate_OTP_prov(): takes in a user's email and calls getOTP to generate
+				a one-time-pass URI that can be sent to Client to generate OTP or QR codes.
+				Note that this isn't really required, as the Client could very well generate
+				those by simply using the secret phrase.
+
+	On generating OTPs:
+		This was implemented with PyOTP in a separate class, contained in getOTP.py.
+		getOTP has two functions:
+			- gen_code(): generates the OTP from the secret phrase and returns it.
+			- gen_prov(): takes in an email and generates a provisioned URI containing
+				the email and secret that can then be used to create QR codes.
+				Note that it returns both the email and secret. They are encrypted by
+				virtue of using TLS when POST-ing. I'm assuming we won't be storing the
+				secret phrase on the Client's side, which is why it's being sent. We 
+				should discuss possible security issues though!
+		So when the server receives a call with /login from Client and the user
+		identified by the id_token that is sent over has NOT been previousy verified,
+		i.e. their dev_token is empty, then we generate the OTP, email it to the user's
+		email and POST to Client with the uri and id_token.
+	
+	On sending emails:
+		This was implemented with Python's standard smtplib in a separate class,
+		contained in sendEmail().py.
+		The class send_Email initializes login and password for the sender's email
+		(twoefay@gmail.com, which I created specifically for this purpose). 
+		
+		!!Note that the password for the email is stored in the script, which I 
+		absolutely hate but the alternatives were not practical:
+			- prompt me for the password when sending email (Pffft...)
+			- store password in the python keyring, which then prompts me for the
+			keyring password before sending an email... no better than before.
+		This means the droplet has to be air-tight!! Hardening with Iptables, ssh-key 
+		access only should be required for any remote logins to prevent tampering.
+
+		The send_Email class has one function, send().
+		send() takes in an email address and message params, where the message is the
+		one-time-password to be sent to the provided email.
+		
+
 5-21-16 9:51pm:
 	Major update:
 		- Renamed /update to /verify and changed the underlying implementation of it, which

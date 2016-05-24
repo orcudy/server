@@ -31,6 +31,9 @@ sudo apt-get install python-cffi libffi-dev build-essentials python-dev libmysql
   * mysql-python
   * pycrypto
   * python-dateutil
+  * pyotp
+  * time
+  * keyring
 
 For example, to install the above in your virtualenv run:
 ```sh

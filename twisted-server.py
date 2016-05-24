@@ -21,7 +21,7 @@ from h2.events import (
     RequestReceived, DataReceived, StreamEnded, WindowUpdated
 )
 from h2.errors import PROTOCOL_ERROR
-
+from hyper import HTTPConnection
 from twisted.web import server, resource
 import json
 import MySQLdb
@@ -36,8 +36,8 @@ import random
 import string
 
 import time
-
-from hyper import HTTPConnection
+import sendEmail
+import getOTP
 
 RequestData = collections.namedtuple('RequestData', ['headers', 'data'])
 
@@ -422,6 +422,45 @@ class H2Protocol(Protocol):
                     # This is a POST-request to httpbin.org
                     # Need actual call to APN
                     self.send_POST(json.dumps(jdata))
+
+                    # =============================================
+                    # If user is not yet verified (i.e. we don't
+                    # have his/her dev_token to call APN), we
+                    # default to email and email the token to
+                    # the user's email
+                    # =============================================
+                    
+                    # Get dev_token from database using id_token
+                    validated = json.loads(self.db_get_user_dev_token(jdata["token"]))
+                    
+                    # If dev_token is '', send OTP via email
+                    # and also POST uri prov to Client 
+                    if not validated['dev_token']:
+                        print "    will send token via email instead"
+
+                        dat = json.dumps(jdata)
+                        
+                        # send OTP code via email                        
+                        self.send_email(dat)
+                        
+                        # get URI prov
+                        email = self.get_email(dat)
+                        otp_prov = self.generate_OTP_prov(email)
+                        
+                        # add prov to JSON
+                        print "    Adding URI '%s' to jdata." % otp_prov
+
+                        jdata.update({'URI':otp_prov})
+                        new_jdata = json.dumps(jdata)
+                        print "    Result:", new_jdata
+                        
+                        # POST URI prov to Client
+                        ########################################
+                        ### NOTE, this needs actual Client URL
+                        ########################################
+                        print "    POST-int to Client..."
+                        self.send_POST(new_jdata)
+                        
                     
                 else:
                     print "    CAN'T LOGIN NON-EXISTENT USER!"
@@ -474,12 +513,10 @@ class H2Protocol(Protocol):
             except KeyError:
                 print "=-=-= Invalid POST with success!"           
                 pass            
-
-            
+         
         elif 'failure' in self.post_type:
             print "...FAILED login for user!"                 
-            self.failure = True
-            
+            self.failure = True  
             self.get_stream_data(data, stream_id)
 
             try:
@@ -536,7 +573,62 @@ class H2Protocol(Protocol):
             print "    JSON POST failed with status %d!" % resp.status
             self.error = True
             return
+
+    # ================================================ #
+    #   Get user's email from user token               #
+    # ================================================ #
+    def get_email(self, user):        
+        print "in get_email with user '%s'" % user
         
+        jstr = json.loads(user)       
+        
+        jemail = json.loads(self.db_get_user_email(jstr['token']))
+        email_addr = jemail['email']
+        return email_addr
+
+    # ================================================ #
+    #   Send email to unverified users                 #
+    # ================================================ #
+    def send_email(self, user):        
+        s = sendEmail.send_Email()
+         
+        jstr = json.loads(user)       
+        print "in send_email with user '%s'" % jstr['token']
+
+        # get user email
+        email = self.get_email(user)
+        
+        # get one-time-pass to send in email
+        otp = self.generate_OTP_code()
+        #token = jstr['token']
+        
+        print "    About to email '%s' with OTP '%s'" % (email, otp)
+        s.send(email, otp)
+
+    # ================================================ #
+    #   Generate one-time-pass                         #
+    # ================================================ #
+    def generate_OTP_code(self):
+        
+        print "in generate_OTP_code"
+        otp = getOTP.OTP()               
+        value = otp.gen_code()
+        
+        print "    GOT value '%s'" % value 
+        return value
+
+    # ================================================ #
+    #   Generate provisioned email                     #
+    # ================================================ #
+    def generate_OTP_prov(self, email):
+        
+        print "in generate_OTP_prov with email '%s'" % email
+        otp = getOTP.OTP()               
+        provisioned = otp.gen_prov(email)
+        
+        print "    GOT provisioned uri '%s'" % provisioned    
+        return provisioned
+  
     # ================================================ #
     #   Handle GET requests                            #
     # ================================================ #    
@@ -569,7 +661,7 @@ class H2Protocol(Protocol):
 
                     # Send POST with TOKEN to the APN
                     self.send_POST(to_send)
-                  
+
                     # Send the response to the GET request
                     stream_data.data.write(to_send)
 
@@ -803,7 +895,6 @@ class H2Protocol(Protocol):
         jstr_data = json.dumps(jstr)
         return jstr_data
 
-
     # ================================================ #
     #   Get user token from database for APN POST      #
     # ================================================ #
@@ -827,6 +918,58 @@ class H2Protocol(Protocol):
         # in this case, return username and token for the user
         jstr = {}
         jstr['token'] = res[0][0]
+        jstr_data = json.dumps(jstr)
+        return jstr_data
+
+    # ================================================ #
+    #   Get user email from database for emaling       #
+    # ================================================ #
+    def db_get_user_email(self, data):
+        
+        print "in db_get_user_email with token '%s'" % data
+            
+        try:
+            db, cursor = self.db_open()
+            
+            # Query database for token
+            cursor.execute("SELECT email FROM Users WHERE id_token= %s ", (data,))
+            res = cursor.fetchall()
+            self.db_close(db)
+        except:
+            print "    Error fetching data..."
+        
+        print "    Values obtained from database, email = ", res[0][0]
+
+        # Specify what to return for GET requests
+        # in this case, return username and token for the user
+        jstr = {}
+        jstr['email'] = res[0][0]
+        jstr_data = json.dumps(jstr)
+        return jstr_data
+
+    # ================================================ #
+    #   Get user dev_token from database               #
+    # ================================================ #
+    def db_get_user_dev_token(self, data):
+        
+        print "in db_get_user_dev_token with token '%s'" % data
+            
+        try:
+            db, cursor = self.db_open()
+            
+            # Query database for token
+            cursor.execute("SELECT dev_token FROM Users WHERE id_token= %s ", (data,))
+            res = cursor.fetchall()
+            self.db_close(db)
+        except:
+            print "    Error fetching data..."
+        
+        print "    Values obtained from database, dev_token = ", res[0][0]
+
+        # Specify what to return for GET requests
+        # in this case, return username and token for the user
+        jstr = {}
+        jstr['dev_token'] = res[0][0]
         jstr_data = json.dumps(jstr)
         return jstr_data
 
