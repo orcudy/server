@@ -1,5 +1,85 @@
 Changelog:
 
+5-25-16 9:33pm:
+	TODO: Still need to refactor the database functions!
+	
+	Added functions for counter-based OTP:
+		Added the gen_hotp() function to the getOTP module's OTP class. The function
+		takes in a count to generate a counter-based OTP, which it returns.
+		In the Server, I added the following function:
+			- generate_HOTP_code(): Creats a OTP object which it uses to pass the value of 
+			a global variable "cnt" (for "counter") to obtain the HOTP code, then it
+			increments "cnt" by one and returns the HOTP value to be sent via SMS or email.
+			Incrementing the counter ensures that the same OTP code will be different.
+			
+			Note that prior to incrementing "cnt" it makes sure its current value does not
+			exceed sys.maxsize (largest integer value on the current system), which, though
+			unlikely to happen, is still a risk. Better safe than sorry. :)
+	
+	Refactoring galore:
+		Started refactoring and shaved off quite a few lines in addition to removing quite
+		a bit of repetition.
+		The biggest refactoring took places in handle_POST(), which had ballooned to several
+		screen-lengths of code after implementing the /register, /verify, /login, /success,
+		and /failure request handling. 
+		I created sub-functions for each:
+			handle_register_request()
+			handle_verify_request()
+			handle_login_request()
+			handle_success_request()
+			handle_failure_request()
+		which allowed me to pull out the common calls to get_stream_data() and json.loads(),
+		and have a single call in handle_POST, rather than calling both functions 5 times! 
+		Now each handle_xxx_request() function takes in a jdata object (i.e. the result of 
+		json.loads(), which can more easily be manipulated) and uses it to obtain the 
+		username, token or other required data from it. 
+		
+		I feel as though the db_validate() calls in each function can be combined as well,
+		but since they do have minor differences, I'll handle it tomorrow (or later on).
+		
+		The database functions will be my next priority because... YUCK!
+	
+	Improved resilience:
+		Included a few try/except blocks in places that would presumably need them to avoid
+		crashes. For example, if a POST were sent without data, all hell would break loose,
+		but this was remedied by putting the get_stream_data() and json.loads() in 
+		handle_POST() in their individual try/except blocks. Tested and it helps. 
+		I put some in a couple of other places but can't immediately recall. Oops.
+	
+
+5-24-16 6:21pm:
+	Major update:
+		- Implemented sending the OTP via SMS using Twilio, since email takes a couple of
+		seconds, which bothers my soul.
+			To install Twilio in your virtual environment:
+				pip install twilio
+				
+			The website: https://www.twilio.com/
+		
+		- I included a "phone" entry into the database too to accommodate the extra
+			functionality. 
+			This was done with:
+			
+			ALTER TABLE Users ADD COLUMN VARCHAR(12) AFTER email;
+		
+		Server includes the sendSMS module, which sets the Twilio account id, token, and
+		Twilio phone number that are used to send the messages. The sendSMS module has a
+		send_SMS class and a single function send() that takes in a phone number and OTP
+		and sends the OTP to the provided number.
+		This was accomplished with the addition of the following functions to the Server:
+			- db_get_user_phone(): Takes a user id_token and queries the database for the
+				user's phone number which it returns.
+			- get_phone(): Takes a JSON, extracts the user id_token and calls 
+				db_get_user_phone(), returns the phone number.
+			- send_sms(): Takes a JSON, creates an sendSMS instance, calls get_phone() to
+				to obtain phone number, calls generate_OTP_code() to obtain the OTP, and
+				uses the sendSMS object to call its send() function with the phone number
+				and OTP.
+		Works better (read 'faster') than email, which is important since the OTP is 
+		time-sensitive. 
+		My  Twilio account is a trial version, so I'm not sure if I have a limit on the
+		number of texts I can send, so using it sparingly (it's commented out by default).		
+
 5-23-16 8:57pm:
 	TODO: Combine all database functions into one, where each query is ran depending
 		on the result required! This will shave off quite a few lines of code and 

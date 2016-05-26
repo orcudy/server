@@ -38,8 +38,11 @@ import string
 import time
 import sendEmail
 import getOTP
+import sendSMS
 
 RequestData = collections.namedtuple('RequestData', ['headers', 'data'])
+
+cnt = 0  # counter for HOTP code
 
 class H2Protocol(Protocol):
     def __init__(self, root):
@@ -47,7 +50,6 @@ class H2Protocol(Protocol):
         self.known_proto = None
         self.root = root
         self.stream_data = {}
-        self.s_body = {}
         self.invalid_method = False
         self.error = False
         self.method_type = 'None'
@@ -85,8 +87,7 @@ class H2Protocol(Protocol):
                 self.dataFrameReceived(event.stream_id, event.data)
             elif isinstance(event, StreamEnded):
                 self.streamComplete(event.stream_id)                
-        self.transport.write(self.conn.data_to_send()) 
-
+        self.transport.write(self.conn.data_to_send())
     
     def requestReceived(self, headers, stream_id):
         # Read in request headers
@@ -109,8 +110,13 @@ class H2Protocol(Protocol):
             return
         
         # Read data sent with request
-        request_data = RequestData(headers, io.BytesIO())
-        self.stream_data[stream_id] = request_data 
+        try:
+            request_data = RequestData(headers, io.BytesIO())
+            self.stream_data[stream_id] = request_data 
+        except:
+            "Issue getting request data in requestReceived!"
+            self.error = True
+            pass
         
         # GET can be handled immediately
         if self.method_type == 'GET':
@@ -279,15 +285,13 @@ class H2Protocol(Protocol):
             print "Hour mismatch!"
             return False
 
-        ###################################################
-        # This is very liberally set just to ease testing #
-        # In production it should be tested with != and   #
-        # probably the seconds should be tested too!      #
-        ###################################################
+        # This is very liberally set just to ease testing
+        # In production it should be tested with != and
+        # probably the seconds should be tested too!
+        
 #        elif new_min < minute:
 #            print "Minute mismatch!"
 #            return False
-
         return True
     
     # ================================================ #
@@ -318,239 +322,217 @@ class H2Protocol(Protocol):
     #   Handle POST requests                           #
     # ================================================ #    
     def handle_POST(self, data, stream_id):
+        print "in handle_POST"
+            
+        try:
+            self.get_stream_data(data, stream_id)
+        except:
+            print "Issue getting stream data in handle_POST!"
+            self.error = True
+            pass
+
+        try:
+            jdata = json.loads(data)
+        except KeyError:
+            print "=-=-= Invalid POST with %s!" % self.post_type            
+            pass
         
-        #===============================================================
-        # THIS OCCURS WHEN CLIENT FIRST REGISTERS NEW USER WITH SERVER #
-        #===============================================================
+        # WHEN CLIENT FIRST REGISTERS NEW USER WITH SERVER
         if 'register' in self.post_type:
-            print "...REGISTER new user!"
+            self.handle_register_request(jdata, stream_id)
 
-            self.get_stream_data(data, stream_id) 
-            
-            try:
-                jdata = json.loads(data)
-                
-                print "    username: " + jdata["username"]
-                print "    email: " + jdata["email"]
-                
-                # if user is already registered, the POST should fail
-                if self.db_validate(jdata["username"]) is not None:
-                    print "    ALREADY REGISTERED!"
-                    self.error = True
-                    return                
-                
-                else:
-                    # generate random token
-                    token = self.gen_token()
-
-                    # add token to JSON string
-                    jdata.update({'token':str(token)})
-
-                    print "    Adding token '%s' to jdata." % token
-                    print "    Result:", json.dumps(jdata)
-
-                    # write user data in database
-                    self.db_set(jdata, stream_id) 
-                                       
-                    print "    Removing 'email' from JSON..."
-                    jdata.pop('email')
-                    print "    JSON to be POST-ed:", json.dumps(jdata)
-                
-                    # Send POST with TOKEN to Client
-                    # - the Client displays the token to the User
-                    # so the user can use it to register with the App.
-                    # - the App will then use that token to communicate
-                    # with the Server (instead of a username)
-                    self.send_POST(json.dumps(jdata))
-                
-            except KeyError:
-                print "=-=-= Invalid POST with register!"            
-                pass
-
-        #==================================================================#
-        # THIS OCCURS WHEN USER REGISTERS ON THE APP AND THE APP VERIFIES  #
-        # USER WITH THE SERVER                                             #
-        #==================================================================#
+        # USER REGISTERS ON APP, APP VERIFIES USER WITH THE SERVER
         elif 'verify' in self.post_type:
-            print "...VERIFY new user with App!"
-
-            self.get_stream_data(data, stream_id) 
-
-            try:
-                jdata = json.loads(data)                
+            self.handle_verify_request(jdata, stream_id)
                 
-                print "    id_token: " + jdata["id_token"]
-                print "    dev_token: " + jdata["dev_token"]
-                
-                # if user token is not in DB, the POST should fail
-                if self.db_validate_token(jdata["id_token"]) is not None:
-                    print "    USER TOKEN FOUND!"
-                    self.db_update_token(jdata, stream_id)
-                    
-                else:
-                    print "    CAN'T UPDATE NON-EXISTENT USER!"
-                    self.error = True
-                    return                
-
-            except KeyError:
-                print "=-=-= Invalid POST with verify!"           
-                pass
-                
-        #=======================================
-        # THIS IS WHERE WE SHOULD CALL THE APN #
-        #=======================================   
+        # LOGIN ATTEMPT, WE SHOULD CALL THE APN  
         elif 'login' in self.post_type:
-            print "...LOG IN user into Client!"
+            self.handle_login_request(jdata, stream_id)
 
-            self.get_stream_data(data, stream_id) 
-
-            try:
-                jdata = json.loads(data)                
-                print "    token: " + jdata["token"]
-                
-                # if user token is not in DB, the POST should fail
-                if self.db_validate_token(jdata["token"]) is not None:
-                    print "    USER TOKEN FOUND!"
-
-                    #################################################
-                    # Send POST with TOKEN to APN
-                    # - APN notifies User
-                    # - User authenticates (or doesn't)
-                    # - App notifies Server of success/failure
-                    #################################################
-                    
-                    # This is a POST-request to httpbin.org
-                    # Need actual call to APN
-                    self.send_POST(json.dumps(jdata))
-
-                    # =============================================
-                    # If user is not yet verified (i.e. we don't
-                    # have his/her dev_token to call APN), we
-                    # default to email and email the token to
-                    # the user's email
-                    # =============================================
-                    
-                    # Get dev_token from database using id_token
-                    validated = json.loads(self.db_get_user_dev_token(jdata["token"]))
-                    
-                    # If dev_token is '', send OTP via email
-                    # and also POST uri prov to Client 
-                    if not validated['dev_token']:
-                        print "    will send token via email instead"
-
-                        dat = json.dumps(jdata)
-                        
-                        # send OTP code via email                        
-                        self.send_email(dat)
-                        
-                        # get URI prov
-                        email = self.get_email(dat)
-                        otp_prov = self.generate_OTP_prov(email)
-                        
-                        # add prov to JSON
-                        print "    Adding URI '%s' to jdata." % otp_prov
-
-                        jdata.update({'URI':otp_prov})
-                        new_jdata = json.dumps(jdata)
-                        print "    Result:", new_jdata
-                        
-                        # POST URI prov to Client
-                        ########################################
-                        ### NOTE, this needs actual Client URL
-                        ########################################
-                        print "    POST-int to Client..."
-                        self.send_POST(new_jdata)
-                        
-                    
-                else:
-                    print "    CAN'T LOGIN NON-EXISTENT USER!"
-                    self.error = True
-                    return                
-
-            except KeyError:
-                print "=-=-= Invalid POST with login!"           
-                pass
-
-        #===================================================
-        # We receive POST from App with 'success'/'failure'#
-        # and we return login 'success' or 'failure' POST  #
-        # to the Client                                    #
-        #===================================================   
+        # received 'success' POST from App, send 'success' POST to Client 
         elif 'success' in self.post_type:
-            print "...SUCCESSFUL login for user!"   
-            self.success = True
+            self.handle_success_request(jdata, stream_id)
             
-            self.get_stream_data(data, stream_id)
-
-            try:
-                jdata = json.loads(data)                
-                print "    token: " + jdata["token"]
-                
-                # if user token is not in DB, the POST should fail
-                if self.db_validate_token(jdata["token"]) is not None:
-                    print "    USER TOKEN FOUND!"
-
-                    # add {'login':'success'} to the return JSON
-                    jdata.update({'login':self.post_type})
-
-                    print "    Adding login '%s' to jdata." % self.post_type
-                    print "    Result:", json.dumps(jdata)
-                    
-                    #################################################
-                    # Received 'success' from the App for a user,
-                    # so send POST with login status to the Client
-                    #################################################
-                    
-                    # This is a POST-request to httpbin.org
-                    # Need actual URL for Client
-                    self.send_POST(json.dumps(jdata))
-                    
-                else:
-                    print "    CAN'T SUCCEED FOR NON-EXISTENT USER!"
-                    self.error = True
-                    return                
-
-            except KeyError:
-                print "=-=-= Invalid POST with success!"           
-                pass            
-         
+        # received 'failure' POST from App, send 'failure' POST to Client          
         elif 'failure' in self.post_type:
-            print "...FAILED login for user!"                 
-            self.failure = True  
-            self.get_stream_data(data, stream_id)
-
-            try:
-                jdata = json.loads(data)                
-                print "    token: " + jdata["token"]
-                
-                # if user token is not in DB, the POST should fail
-                if self.db_validate_token(jdata["token"]) is not None:
-                    print "    USER TOKEN FOUND!"
-
-                    # add {'login':'success'} to the return JSON
-                    jdata.update({'login':self.post_type})
-
-                    print "    Adding login '%s' to jdata." % self.post_type
-                    print "    Result:", json.dumps(jdata)
-                    #################################################
-                    # Received 'failure' from the App for a user,
-                    # so send POST with login status to the Client
-                    #################################################
-                    
-                    # This is a POST-request to httpbin.org
-                    # Need actual URL for Client
-                    self.send_POST(json.dumps(jdata))
-                    
-                else:
-                    print "    CAN'T FAIL FOR NON-EXISTENT USER!"
-                    self.error = True
-                    return                
-
-            except KeyError:
-                print "=-=-= Invalid POST with failure!"           
-                pass            
+            self.handle_failure_request(jdata, stream_id)
  
         print "POST complete."
+
+    # ================================================ #
+    #   handle POST for a /register request             #
+    # ================================================ #
+    def handle_register_request(self, jdata, stream_id):
+        print "...REGISTER new user!"
+        print "    username: " + jdata["username"]
+        print "    email: " + jdata["email"]
+        print "    phone: " + jdata["phone"]
+        
+        # if user is already registered, the POST should fail
+        if self.db_validate(jdata["username"]) is not None:
+            print "    ALREADY REGISTERED!"
+            self.error = True
+            return                
+        else:
+            # generate random token
+            token = self.gen_token()
+
+            # add token to JSON string
+            jdata.update({'token':str(token)})
+
+            print "    Adding token '%s' to jdata." % token
+            print "    Result:", json.dumps(jdata)
+
+            # write user data in database
+            self.db_set(jdata, stream_id) 
+                               
+            print "    Removing 'email' from JSON..."
+            jdata.pop('email')
+            print "    Removing 'phone' from JSON..."
+            jdata.pop('phone')
+            print "    JSON to be POST-ed:", json.dumps(jdata)
+        
+            # Send POST with TOKEN to Client
+            # - the Client displays the token to the User
+            # so the user can use it to register with the App.
+            # - the App will then use that token to communicate
+            # with the Server (instead of a username)
+            self.send_POST(json.dumps(jdata))
+
+    # ================================================ #
+    #   handle POST for a /verify request              #
+    # ================================================ #
+    def handle_verify_request(self, jdata, stream_id):
+        print "...VERIFY new user with App!"                 
+        print "    id_token: " + jdata["id_token"]
+        print "    dev_token: " + jdata["dev_token"]
+        
+        # if user token is not in DB, the POST should fail
+        if self.db_validate_token(jdata["id_token"]) is not None:
+            print "    USER TOKEN FOUND!"
+            self.db_update_token(jdata, stream_id)    
+        else:
+            print "    CAN'T UPDATE NON-EXISTENT USER!"
+            self.error = True
+            return
+        
+    # ================================================ #
+    #   handle POST for a /login request               #
+    # ================================================ #
+    def handle_login_request(self, jdata, stream_id):
+        print "...LOG IN user into Client!"
+        print "    token: " + jdata["token"]
+        
+        # if user token is not in DB, the POST should fail
+        if self.db_validate_token(jdata["token"]) is not None:
+            print "    USER TOKEN FOUND!"
+           
+            # Get dev_token from database using id_token
+            validated = json.loads(self.db_get_user_dev_token(jdata["token"]))
+            
+            # If dev_token is '' (i.e. no dev_token to call APN)
+            # send OTP via email/sms and POST OTP to Client 
+            if not validated['dev_token']:
+                print "    will send token via email instead"
+                dat = json.dumps(jdata)
+                
+                # send OTP code via email                        
+                self.send_email(dat)
+                                       
+                # send SMS
+#                self.send_sms(dat)
+
+                # generate and add HOTP to JSON
+                hotp = self.generate_HOTP_code()
+                print "    Adding HOTP '%s' to jdata." % hotp
+
+                jdata.update({'HOTP':hotp})
+                new_jdata = json.dumps(jdata)
+                print "    Result:", new_jdata
+                
+                # POST JSON to Client
+                ########################################
+                ### Need actual Client URL
+                ########################################
+                print "    POST-int to Client..."
+                self.send_POST(new_jdata)
+            else:
+                # Send POST with TOKEN to APN
+                # - APN notifies User
+                # - User authenticates (or doesn't)
+                # - App notifies Server of success/failure
+                
+                # This is a POST-request to httpbin.org
+                ######################################
+                ### Need actual call to APN
+                ######################################
+                self.send_POST(json.dumps(jdata))
+        else:
+            print "    CAN'T LOGIN NON-EXISTENT USER!"
+            self.error = True
+            return
+
+    # ================================================ #
+    #   handle POST for a /success request             #
+    # ================================================ #
+    def handle_success_request(self, jdata, stream_id):
+        print "...SUCCESSFUL login for user!"   
+        self.success = True
+              
+        print "    token: " + jdata["token"]
+        
+        # if user token is not in DB, the POST should fail
+        if self.db_validate_token(jdata["token"]) is not None:
+            print "    USER TOKEN FOUND!"
+
+            # add {'login':'success'} to the return JSON
+            jdata.update({'login':self.post_type})
+
+            print "    Adding login '%s' to jdata." % self.post_type
+            print "    Result:", json.dumps(jdata)
+            
+            # Received 'success' from App, send POST with login status to Client
+
+            #################################################            
+            # This is a POST-request to httpbin.org
+            # Need actual URL for Client
+             #################################################           
+            self.send_POST(json.dumps(jdata))  
+        else:
+            print "    CAN'T SUCCEED FOR NON-EXISTENT USER!"
+            self.error = True
+            return
+
+    # ================================================ #
+    #   handle POST for a /failure request             #
+    # ================================================ #
+    def handle_failure_request(self, jdata, stream_id):
+        print "...FAILED login for user!"                 
+        self.failure = True
+                
+        print "    token: " + jdata["token"]
+        
+        # if user token is not in DB, the POST should fail
+        if self.db_validate_token(jdata["token"]) is not None:
+            print "    USER TOKEN FOUND!"
+
+            # add {'login':'success'} to the return JSON
+            jdata.update({'login':self.post_type})
+
+            print "    Adding login '%s' to jdata." % self.post_type
+            print "    Result:", json.dumps(jdata)
+            #################################################
+            # Received 'failure' from the App for a user,
+            # so send POST with login status to the Client
+            #################################################
+            
+            # This is a POST-request to httpbin.org
+            # Need actual URL for Client
+            self.send_POST(json.dumps(jdata))
+        else:
+            print "    CAN'T FAIL FOR NON-EXISTENT USER!"
+            self.error = True
+            return
 
     # ================================================ #
     #   When the App sends a POST request to Server    #
@@ -580,8 +562,7 @@ class H2Protocol(Protocol):
     def get_email(self, user):        
         print "in get_email with user '%s'" % user
         
-        jstr = json.loads(user)       
-        
+        jstr = json.loads(user)
         jemail = json.loads(self.db_get_user_email(jstr['token']))
         email_addr = jemail['email']
         return email_addr
@@ -589,30 +570,68 @@ class H2Protocol(Protocol):
     # ================================================ #
     #   Send email to unverified users                 #
     # ================================================ #
-    def send_email(self, user):        
-        s = sendEmail.send_Email()
-         
-        jstr = json.loads(user)       
-        print "in send_email with user '%s'" % jstr['token']
+    def send_email(self, user):           
+        print "in send_email with user '%s'" % user
 
-        # get user email
+        s = sendEmail.send_Email()
         email = self.get_email(user)
-        
-        # get one-time-pass to send in email
         otp = self.generate_OTP_code()
-        #token = jstr['token']
         
         print "    About to email '%s' with OTP '%s'" % (email, otp)
         s.send(email, otp)
 
     # ================================================ #
+    #   Get user's phone number from user token        #
+    # ================================================ #
+    def get_phone(self, user):        
+        print "in get_phone with user '%s'" % user
+        
+        jstr = json.loads(user)
+        phone_num = json.loads(self.db_get_user_phone(jstr['token']))
+        phone = phone_num['phone']
+        return phone
+
+    # ================================================ #
+    #   Send text to unverified users                 #
+    # ================================================ #
+    def send_sms(self, user):
+        print "in send_sms with user '%s'" % user
+
+        s = sendSMS.send_SMS()
+        phone = self.get_phone(user)
+        otp = self.generate_OTP_code()
+        
+        print "    About to send sms '%s' with OTP '%s'" % (phone, otp)
+        s.send(phone, otp)
+
+    # ================================================ #
     #   Generate one-time-pass                         #
     # ================================================ #
     def generate_OTP_code(self):
-        
         print "in generate_OTP_code"
+        
         otp = getOTP.OTP()               
-        value = otp.gen_code()
+        value = otp.gen_totp()
+        
+        print "    GOT value '%s'" % value 
+        return value
+
+    # ================================================ #
+    #   Generate counter-based one-time-pass           #
+    # ================================================ #
+    def generate_HOTP_code(self):
+        print "in generate_OTP_code"        
+
+        hotp = getOTP.OTP()
+        global cnt         
+        value = hotp.gen_hotp(cnt)
+
+        # increment counter so next HOTP code differs
+        # if counter exceeds max int value in system, reset
+        if cnt < sys.maxsize:
+            cnt += 1
+        else:
+            cnt = 0
         
         print "    GOT value '%s'" % value 
         return value
@@ -620,57 +639,59 @@ class H2Protocol(Protocol):
     # ================================================ #
     #   Generate provisioned email                     #
     # ================================================ #
-    def generate_OTP_prov(self, email):
-        
+    def generate_OTP_prov(self, email):  
         print "in generate_OTP_prov with email '%s'" % email
+        
         otp = getOTP.OTP()               
         provisioned = otp.gen_prov(email)
         
         print "    GOT provisioned uri '%s'" % provisioned    
         return provisioned
-  
+
     # ================================================ #
     #   Handle GET requests                            #
     # ================================================ #    
     def handle_GET(self, uname, stream_id):
-            print "in handle_GET with %s" % uname             
-            if uname:
-                to_send = self.db_get_user_token(uname)
-                
-                print "    >> about to send %s" % to_send
-                request_data = self.stream_data[stream_id]
-                self.s_body = to_send
-                #print "    >> loaded:", json.loads(self.s_body)
+        print "in handle_GET with %s" % uname
+        
+        if uname:
+            to_send = self.db_get_user_token(uname)
             
-                try:
-                    stream_data = self.stream_data[stream_id]
-                except KeyError:
-                    print "GET KeyError..."
-                    self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
-                else:
-
-                    ########################################################
-                    ########################################################
-                    # THIS WAS INITIAL IMPLEMENTATION -- NOT VALID ANYMORE
-                    # send POST to APN
-                    # if APP POSTS 'success' we respond to the 
-                    # GET with 'success'
-                    # else we respond with 'failure'
-                    ########################################################
-                    ########################################################
-
-                    # Send POST with TOKEN to the APN
-                    self.send_POST(to_send)
-
-                    # Send the response to the GET request
-                    stream_data.data.write(to_send)
-
+            print "    >> about to send %s" % to_send         
+        
+            try:
+                stream_data = self.stream_data[stream_id]
+            except KeyError:
+                print "KeyError with stream_data in handle_GET."
+                self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
             else:
-                print "=== Invalid username provided!"
-                self.error = True
-                return    
-            
-            print "GET complete."
+                ########################################################
+                ########################################################
+                # THIS WAS INITIAL IMPLEMENTATION -- NOT VALID ANYMORE
+                # send POST to APN
+                # if APP POSTS 'success' we respond to the 
+                # GET with 'success'
+                # else we respond with 'failure'
+                ########################################################
+                ########################################################
+
+                # Send POST with TOKEN to the APN
+                self.send_POST(to_send)
+
+                # Send the response to the GET request
+                stream_data.data.write(to_send)
+        else:
+            print "=== Invalid username provided!"
+            self.error = True
+            return    
+        
+        # just for testing --- REMOVE THESE 4 lines             
+        hotp = self.generate_HOTP_code()
+        global cnt
+        print "CURRENT COUNTER =", cnt
+        print "CURRENT CODE =", hotp
+        
+        print "GET complete."
 
     # ================================================ #
     #   This is where POST data is received and we     #
@@ -717,17 +738,21 @@ class H2Protocol(Protocol):
             try:
                 request_data = self.stream_data[stream_id]
             except KeyError:
-                print "Yikes in streamComplete."
+                print "Yikes, KeyError in streamComplete."
                 return
-
-            # Pack in the JSON to return in body
-            body = json.loads(request_data.data.getvalue().decode('utf-8'))
             
-            # pack data to send with response to GET
-            if self.method_type == 'GET':        
+            # pack data to send with response to GET response
+            if self.method_type == 'GET':
+                # Pack in the JSON to return in body
+                try:
+                    body = json.loads(request_data.data.getvalue().decode('utf-8'))
+                except:
+                    print "Issues decoding request JSON in streamComplete!"
+                    body = ''
+                    pass
                 data = json.dumps(body).encode("utf8") 
 
-            # POST returns no data
+            # POST response returns no data
             elif self.method_type == 'POST':
                 data = ''
            
@@ -803,11 +828,11 @@ class H2Protocol(Protocol):
     def db_set(self, dat, stream_id):
         db, cursor = self.db_open()
         
-        print "in db_set, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
+        print "in db_set, values %s %s %s %s" % (dat["username"], dat["email"], dat["phone"], dat["token"])
         
         # Insert values into database 
-        sql = "INSERT INTO Users (username, email, id_token, dev_token) VALUES ('%s', '%s', '%s', '%s')" % \
-             (dat["username"], dat["email"], dat["token"], '')
+        sql = "INSERT INTO Users (username, email, phone, id_token, dev_token) VALUES ('%s', '%s', '%s', '%s', '%s')" % \
+             (dat["username"], dat["email"], dat["phone"], dat["token"], '')
         
         try:
             cursor.execute(sql)
@@ -820,13 +845,18 @@ class H2Protocol(Protocol):
             
         self.db_close(db)
 
+
+
+################# This needs to be updated! #######################
+
+
     # ================================================ #
     #   Update the user token in the database          #
     # ================================================ #
     def db_update(self, dat, stream_id):
-        db, cursor = self.db_open()
-
         print "in db_update, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
+        
+        db, cursor = self.db_open()
         
         # Update values in database 
         sql = 'UPDATE Users SET id_token="%s" WHERE username="%s" ' % (dat["token"], dat["username"])
@@ -848,10 +878,9 @@ class H2Protocol(Protocol):
     #   Update the device dev_token in the database    #
     # ================================================ #
     def db_update_token(self, dat, stream_id):
-        db, cursor = self.db_open()
-
         print "in db_update_token, values %s %s" % (dat["id_token"], dat["dev_token"])
         
+        db, cursor = self.db_open()
         # Update values in database 
         sql = 'UPDATE Users SET dev_token="%s" WHERE id_token="%s" ' % (dat["dev_token"], dat["id_token"])
         
@@ -872,7 +901,6 @@ class H2Protocol(Protocol):
     #   Get user info from database for GET response   #
     # ================================================ #
     def db_get(self, data):
-        
         print "in db_get with username '%s'" % data
             
         try:
@@ -899,7 +927,6 @@ class H2Protocol(Protocol):
     #   Get user token from database for APN POST      #
     # ================================================ #
     def db_get_user_token(self, data):
-        
         print "in db_get_user_token with username '%s'" % data
             
         try:
@@ -925,7 +952,6 @@ class H2Protocol(Protocol):
     #   Get user email from database for emaling       #
     # ================================================ #
     def db_get_user_email(self, data):
-        
         print "in db_get_user_email with token '%s'" % data
             
         try:
@@ -951,7 +977,6 @@ class H2Protocol(Protocol):
     #   Get user dev_token from database               #
     # ================================================ #
     def db_get_user_dev_token(self, data):
-        
         print "in db_get_user_dev_token with token '%s'" % data
             
         try:
@@ -967,9 +992,34 @@ class H2Protocol(Protocol):
         print "    Values obtained from database, dev_token = ", res[0][0]
 
         # Specify what to return for GET requests
-        # in this case, return username and token for the user
+        # in this case, return email for the user
         jstr = {}
         jstr['dev_token'] = res[0][0]
+        jstr_data = json.dumps(jstr)
+        return jstr_data
+
+    # ================================================ #
+    #   Get user phone from database for texting       #
+    # ================================================ #
+    def db_get_user_phone(self, data):
+        print "in db_get_user_phone with token '%s'" % data
+            
+        try:
+            db, cursor = self.db_open()
+            
+            # Query database for token
+            cursor.execute("SELECT phone FROM Users WHERE id_token= %s ", (data,))
+            res = cursor.fetchall()
+            self.db_close(db)
+        except:
+            print "    Error fetching data..."
+        
+        print "    Values obtained from database, phone = ", res[0][0]
+
+        # Specify what to return for GET requests
+        # in this case, return phone for the user
+        jstr = {}
+        jstr['phone'] = res[0][0]
         jstr_data = json.dumps(jstr)
         return jstr_data
 

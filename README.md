@@ -61,7 +61,7 @@ Testing with httpbin.org is awesome because it returns the contents of your requ
 so you can see immediately if you sent over what you thought you did.
 ***
 
-#### Keys & certificates
+#### NOTE on Keys & Certificates
 You will have to generate your own self-signed certificate and key as they are 
 required for HTTP/2.0, so lookup a tutorial on how to do that if you don't know. 
 You'll see in the code, at the bottom, where to specify the location of your 
@@ -94,7 +94,8 @@ GRANT ALL ON cs130.* TO '130user' IDENTIFIED BY '130security';
 USE cs130;
 CREATE TABLE Users(
 	username VARCHAR(40) UNIQUE NOT NULL PRIMARY KEY, 
-	email VARCHAR(40) UNIQUE NOT NULL, 
+	email VARCHAR(40) UNIQUE NOT NULL,
+	phone VARCHAR(12) UNIQUE NOT NULL,
 	id_token VARCHAR(80) PRIMARY KEY, 
 	dev_token VARCHAR(80)
 ); 
@@ -188,13 +189,13 @@ The return for our droplet server would be the following JSON:
 ### Deployed on the droplet
 ---
 ###### POST params available and their purpose:
-| Path        | Purpose                                        | JSON data sent with request   | Server reaction                                          |
-| ----------- |:----------------------------------------------:|------------------------------:|---------------------------------------------------------:|
-| /register   | Client registers new user                      | username, email               | POSTs /register to Client with JSON with id_token        |
-| /verify     | App verifies user + token device token         | id_token, dev_token           | Can now POST to APN with dev_token                       |
-| /login      | Client reports that user attempts to log in    | id_token                      | POSTs to APN with dev_token                              |
-| /success    | App reports user authenticated successfully    | id_token                      | POSTs /login to Client with JSON with id_token, success  |
-| /failure    | App reports user authenticated unsuccessfully  | id_token                      | POSTS /login to Client with JSON with id_token, failure  |
+| Path        | Purpose                                        | JSON data sent with request   | Server reaction                                             |
+| ----------- |:----------------------------------------------:|------------------------------:|------------------------------------------------------------:|
+| /register   | Client registers new user                      | username, email               | POSTs /register to Client with JSON with id_token           |
+| /verify     | App verifies user + token device token         | id_token, dev_token           | Can now POST to APN with dev_token                          |
+| /login      | Client reports that user attempts to log in    | id_token                      | POSTs to APN with dev_token (or email OTP + POST to Client) |
+| /success    | App reports user authenticated successfully    | id_token                      | POSTs /login to Client with JSON with id_token, success     |
+| /failure    | App reports user authenticated unsuccessfully  | id_token                      | POSTS /login to Client with JSON with id_token, failure     |
 
 
 The database has been setup on Chris's droplet, so you can test POST and GET 
