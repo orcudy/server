@@ -34,6 +34,7 @@ sudo apt-get install python-cffi libffi-dev build-essentials python-dev libmysql
   * pyotp
   * time
   * keyring
+  * twilio
 
 For example, to install the above in your virtualenv run:
 ```sh
