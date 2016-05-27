@@ -116,16 +116,19 @@ SELECT * FROM Users;
 On the droplet server this will return something like this:
 ```mysql
 mysql> select * from Users;
-+-----------+--------------------+----------------------+-----------+
-| username  | email              | id_token             | dev_token |
-+-----------+--------------------+----------------------+-----------+
-| bro       | bro@email.com      | 76545246587232       | NULL      |
-| isThisOn? | blsssa@example.com | 3IYsBH6wDEyVCZfn     | NULL      |
-| sexy      | sexy@email.com     | 23472                | NULL      |
-| something | bla@example.com    | 234h38fKW0dje238E    | NULL      |
-| tester    | tester@email.com   | 4535343              | NULL      |
-| testuser  | test@email.com     | 23598745434943758438 | NULL      |
-+-----------+--------------------+----------------------+-----------+
++---------------+------------------------+------------+----------------------+---------------+
+| username      | email                  | phone      | id_token             | dev_token     |
++---------------+------------------------+------------+----------------------+---------------+
+| bro           | bro@email.com          | NULL       | 76545246587232       | NULL          |
+| isThisOn?     | blsssa@example.com     | NULL       | 3IYsBH6wDEyVCZfn     | NULL          |
+| pastMyBedtime | INeedSleep@example.com | NULL       | oO1A92W7Yc4r3bEa     | MyDevTokenLOL |
+| ross          | rch******@gmail.com    | 619******* | vKrnc3nfFd7YQmTC     |               |
+| sexy          | sexy@email.com         | NULL       | 23472                | NULL          |
+| something     | bla@example.com        | NULL       | 234h38fKW0dje238E    | NULL          |
+| tester        | tester@email.com       | NULL       | 4535343              | NULL          |
+| testuser      | test@email.com         | NULL       | 23598745434943758438 | NULL          |
++---------------+------------------------+------------+----------------------+---------------+
+
 ```
 The id_token here isn't very random/unique because these users were
 created with an older version of the server. Also, the dev_token
@@ -142,7 +145,7 @@ SELECT username, COUNT(*) FROM Users WHERE username='<username>'
 
 I register new users into the database with the following:
 ```mysql
-INSERT INTO Users (username, email, id_token, dev_token) VALUES ('<username>', '<email>', '<random token>', '');
+INSERT INTO Users (username, email, phone, id_token, dev_token) VALUES ('<username>', '<email>', '<phone>', '<random token>', '');
 ```
 
 ---
@@ -192,9 +195,9 @@ The return for our droplet server would be the following JSON:
 ###### POST params available and their purpose:
 | Path        | Purpose                                        | JSON data sent with request   | Server reaction                                             |
 | ----------- |:----------------------------------------------:|------------------------------:|------------------------------------------------------------:|
-| /register   | Client registers new user                      | username, email               | POSTs /register to Client with JSON with id_token           |
+| /register   | Client registers new user                      | username, email, phone        | responds to Client's POST with JSON containing id_token     |
 | /verify     | App verifies user + token device token         | id_token, dev_token           | Can now POST to APN with dev_token                          |
-| /login      | Client reports that user attempts to log in    | id_token                      | POSTs to APN with dev_token (or email OTP + POST to Client) |
+| /login      | Client reports that user attempts to log in    | id_token                      | POSTs to APN with dev_token (or SMS OTP & send to Client)   |
 | /success    | App reports user authenticated successfully    | id_token                      | POSTs /login to Client with JSON with id_token, success     |
 | /failure    | App reports user authenticated unsuccessfully  | id_token                      | POSTS /login to Client with JSON with id_token, failure     |
 
@@ -204,7 +207,12 @@ requests in the following way:
 
 #### Client -> Server /register POST:
 ```sh
-curl --http2 -kv -H "Content-Type: application/json" -X POST -d '{"username":"crazy","email":"crazy@email.com"}' https://45.55.160.135:8080/register
+curl --http2 -kv -H "Content-Type: application/json" -X POST -d '{"username":"crazy","email":"crazy@email.com", "phone":"1234567890"}' https://45.55.160.135:8080/register
+```
+
+The above get should return a JSON of the form:
+```
+{"token":"<some token>"}
 ```
 
 #### GET:
@@ -236,8 +244,8 @@ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"3IYsBH
 
 ### Example:
 ```sh
-ross@ubuntu:~$ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"username":"pastMyBedtime","email":"INeedSleep@example.com"}' https://45.55.160.135:8080/register
-
+ross@ubuntu:~$ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"username":"pastMyBedtime","email":"INeedSleep@example.com","phone":"1234567890"}' https://45.55.160.135:8080/register
+{"token": "oO1A92W7Yc4r3bEa"}
 ross@ubuntu:~$ curl --http2 -k https://45.55.160.135:8080/user/pastMyBedtime
 {"token": "oO1A92W7Yc4r3bEa"}
 

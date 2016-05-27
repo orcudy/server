@@ -1,5 +1,53 @@
 Changelog:
 
+5-26-16 6:19pm:
+	Tweaked the POST return to include data, as requested by Fay. Now a /register
+	POST request with the following JSON:
+		'{"username":"username here","email":"email@here.com","phone":"1234567890"}'
+	if user does not exist in the database, the Serverr will add the user to the database,
+	generate a random id_token, and return the following JSON as data:
+		'{"token":"some random token"}'
+	
+	Similarly, a /login POST request for an unverified user with the following JSON:
+		'{"token":"some existing user token"}'
+	will generate an HOTP code and return it as response to the request in the JSON:
+		'{"HOTP":"random 6-digit code"}'
+	while also sending an SMS or email (currently SMS) to the user's phone number.
+	
+
+	Refactoring galore (Part 2, database edition) -- dropped another 90 lines of code!
+		- Removed unused db_update() function.
+		- Removed unused parameter stream_id from db_set() and db_update_token()
+		- Created 3 functions to do all the work for the others:
+			- db_run_validate_query() takes in a query and performs the validation
+				previously done by:
+					- db_validate_username()
+					- db_validate_token()
+				which now essentially only pass the query to be executed.
+				
+			- db_run_modify_query() takes in a query and performs the update/alter table
+				queries previously done by:
+					- db_set()
+					- db_update_token()
+				and now the 2 functions above only pass the query to be executed.
+				
+			- db_run_get_query(): takes in a query and a what JSON to return and performs
+				the select query, and generates the return JSON each of the following:   
+					- db_get_user_token()
+					- db_get_user_email()
+					- db_get_user_dev_token()
+					- db_get_user_phone()
+				which now only provide the query and type of JSON desired.
+				
+		- Shifted a few of things about in order to keep like functions together.
+		- Added a try/except/else block for the db_run_get_query() to prevent issues
+			when a bogus user is sought after.
+		- Just remembered that last night while refactoring I also added a try/except
+			block in streamComplete() getting values from request_data for body (and
+			pulled it into the if/elif statement as it should've been), which would 
+			crash if there is no (or not proper) request data provided.	
+
+
 5-25-16 9:33pm:
 	TODO: Still need to refactor the database functions!
 	

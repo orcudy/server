@@ -58,9 +58,10 @@ class H2Protocol(Protocol):
         self.failure = False
         self.uname = 'None'
         self.cipher_key = 'f456a56b567f4094ccd45745f063a465'
+        self.return_JSON = ''
 
         # this hard-coded URL simulates the Client address
-        self.url = 'https://httpbin.org'
+        self.url = 'httpbin.org'
         
         # hard-coded values to send in success/failure POST
         self.post_data_success = '{"user":"bro","login":"success"}'
@@ -167,8 +168,8 @@ class H2Protocol(Protocol):
                     print "First param not 'user' but '%s'" % param_list[0]
                     return False
 
-                ##### call db_validate for username #####
-                if self.db_validate(param_list[1]) is None:
+                ##### call db_validate_username for username #####
+                if self.db_validate_username(param_list[1]) is None:
                     print "Erroneous username provided '%s'" % param_list[1]
                     return False
                 
@@ -360,7 +361,7 @@ class H2Protocol(Protocol):
         print "POST complete."
 
     # ================================================ #
-    #   handle POST for a /register request             #
+    #   handle POST for a /register request            #
     # ================================================ #
     def handle_register_request(self, jdata, stream_id):
         print "...REGISTER new user!"
@@ -369,35 +370,40 @@ class H2Protocol(Protocol):
         print "    phone: " + jdata["phone"]
         
         # if user is already registered, the POST should fail
-        if self.db_validate(jdata["username"]) is not None:
+        if self.db_validate_username(jdata["username"]) is not None:
             print "    ALREADY REGISTERED!"
             self.error = True
-            return                
-        else:
+            return
+        else:       
             # generate random token
             token = self.gen_token()
 
+            print "    Adding token '%s' to jdata." % token
             # add token to JSON string
             jdata.update({'token':str(token)})
-
-            print "    Adding token '%s' to jdata." % token
             print "    Result:", json.dumps(jdata)
 
-            # write user data in database
-            self.db_set(jdata, stream_id) 
+            # save new user's username, email, and phone in database
+            self.db_set(jdata) 
                                
             print "    Removing 'email' from JSON..."
             jdata.pop('email')
             print "    Removing 'phone' from JSON..."
             jdata.pop('phone')
-            print "    JSON to be POST-ed:", json.dumps(jdata)
-        
+
             # Send POST with TOKEN to Client
             # - the Client displays the token to the User
             # so the user can use it to register with the App.
             # - the App will then use that token to communicate
             # with the Server (instead of a username)
-            self.send_POST(json.dumps(jdata))
+#            self.send_POST(json.dumps(jdata))
+
+            # send token in the response to the POST request itself
+            print "    Removing 'username' from JSON..."
+            jdata.pop('username')            
+            self.return_JSON = json.dumps(jdata)            
+
+            print "    JSON to be POST-ed:", self.return_JSON
 
     # ================================================ #
     #   handle POST for a /verify request              #
@@ -410,7 +416,7 @@ class H2Protocol(Protocol):
         # if user token is not in DB, the POST should fail
         if self.db_validate_token(jdata["id_token"]) is not None:
             print "    USER TOKEN FOUND!"
-            self.db_update_token(jdata, stream_id)    
+            self.db_update_token(jdata)    
         else:
             print "    CAN'T UPDATE NON-EXISTENT USER!"
             self.error = True
@@ -430,32 +436,40 @@ class H2Protocol(Protocol):
             # Get dev_token from database using id_token
             validated = json.loads(self.db_get_user_dev_token(jdata["token"]))
             
+            # Backup method
             # If dev_token is '' (i.e. no dev_token to call APN)
             # send OTP via email/sms and POST OTP to Client 
             if not validated['dev_token']:
-                print "    will send token via email instead"
+                print "    will send OTP via backup instead"
                 dat = json.dumps(jdata)
                 
                 # send OTP code via email                        
-                self.send_email(dat)
+#                self.send_email(dat)
                                        
                 # send SMS
 #                self.send_sms(dat)
 
+                ### HOTP ###       
                 # generate and add HOTP to JSON
-                hotp = self.generate_HOTP_code()
-                print "    Adding HOTP '%s' to jdata." % hotp
+#                hotp = self.generate_HOTP_code()
+#                print "    Adding HOTP '%s' to jdata." % hotp
+                # add HOTP to JSON to return in POST
+#                jdata.update({'HOTP':hotp})
 
-                jdata.update({'HOTP':hotp})
-                new_jdata = json.dumps(jdata)
-                print "    Result:", new_jdata
+                ### TOTP ###
+                # generate and add TOTP to JSON
+                totp = self.generate_OTP_code()
+                print "    Adding TOTP '%s' to jdata." % totp
+                # add TOTP to JSON to return in POST
+                jdata.update({'TOTP':totp})
+
+                print "    Removing 'token' from JSON..."
+                jdata.pop('token')
                 
-                # POST JSON to Client
-                ########################################
-                ### Need actual Client URL
-                ########################################
-                print "    POST-int to Client..."
-                self.send_POST(new_jdata)
+                # setting to return HOTP in response to login POST from Client
+                self.return_JSON = json.dumps(jdata)            
+                print "    JSON to be POST-ed:", self.return_JSON
+                    
             else:
                 # Send POST with TOKEN to APN
                 # - APN notifies User
@@ -467,6 +481,8 @@ class H2Protocol(Protocol):
                 ### Need actual call to APN
                 ######################################
                 self.send_POST(json.dumps(jdata))
+                
+                
         else:
             print "    CAN'T LOGIN NON-EXISTENT USER!"
             self.error = True
@@ -540,13 +556,13 @@ class H2Protocol(Protocol):
     #   POST request to notify Client of user's        #
     #   successful or failed login attempt             #
     # ================================================ #
-    def send_POST(self, response):        
-        c = HTTPConnection('http2bin.org')
+    def send_POST(self, response):
+        c = HTTPConnection(self.url)
         c.request('POST', '/post', body=response)
         resp = c.get_response()
         
         # If you wish to see what was POST-ed, uncomment line below
-        print resp.read()        
+#        print resp.read()        
         #return (resp.status)
         
         if resp.status == 200:
@@ -555,98 +571,6 @@ class H2Protocol(Protocol):
             print "    JSON POST failed with status %d!" % resp.status
             self.error = True
             return
-
-    # ================================================ #
-    #   Get user's email from user token               #
-    # ================================================ #
-    def get_email(self, user):        
-        print "in get_email with user '%s'" % user
-        
-        jstr = json.loads(user)
-        jemail = json.loads(self.db_get_user_email(jstr['token']))
-        email_addr = jemail['email']
-        return email_addr
-
-    # ================================================ #
-    #   Send email to unverified users                 #
-    # ================================================ #
-    def send_email(self, user):           
-        print "in send_email with user '%s'" % user
-
-        s = sendEmail.send_Email()
-        email = self.get_email(user)
-        otp = self.generate_OTP_code()
-        
-        print "    About to email '%s' with OTP '%s'" % (email, otp)
-        s.send(email, otp)
-
-    # ================================================ #
-    #   Get user's phone number from user token        #
-    # ================================================ #
-    def get_phone(self, user):        
-        print "in get_phone with user '%s'" % user
-        
-        jstr = json.loads(user)
-        phone_num = json.loads(self.db_get_user_phone(jstr['token']))
-        phone = phone_num['phone']
-        return phone
-
-    # ================================================ #
-    #   Send text to unverified users                 #
-    # ================================================ #
-    def send_sms(self, user):
-        print "in send_sms with user '%s'" % user
-
-        s = sendSMS.send_SMS()
-        phone = self.get_phone(user)
-        otp = self.generate_OTP_code()
-        
-        print "    About to send sms '%s' with OTP '%s'" % (phone, otp)
-        s.send(phone, otp)
-
-    # ================================================ #
-    #   Generate one-time-pass                         #
-    # ================================================ #
-    def generate_OTP_code(self):
-        print "in generate_OTP_code"
-        
-        otp = getOTP.OTP()               
-        value = otp.gen_totp()
-        
-        print "    GOT value '%s'" % value 
-        return value
-
-    # ================================================ #
-    #   Generate counter-based one-time-pass           #
-    # ================================================ #
-    def generate_HOTP_code(self):
-        print "in generate_OTP_code"        
-
-        hotp = getOTP.OTP()
-        global cnt         
-        value = hotp.gen_hotp(cnt)
-
-        # increment counter so next HOTP code differs
-        # if counter exceeds max int value in system, reset
-        if cnt < sys.maxsize:
-            cnt += 1
-        else:
-            cnt = 0
-        
-        print "    GOT value '%s'" % value 
-        return value
-
-    # ================================================ #
-    #   Generate provisioned email                     #
-    # ================================================ #
-    def generate_OTP_prov(self, email):  
-        print "in generate_OTP_prov with email '%s'" % email
-        
-        otp = getOTP.OTP()               
-        provisioned = otp.gen_prov(email)
-        
-        print "    GOT provisioned uri '%s'" % provisioned    
-        return provisioned
 
     # ================================================ #
     #   Handle GET requests                            #
@@ -752,9 +676,9 @@ class H2Protocol(Protocol):
                     pass
                 data = json.dumps(body).encode("utf8") 
 
-            # POST response returns no data
+            # POST response returns special JSON data
             elif self.method_type == 'POST':
-                data = ''
+                data = self.return_JSON
            
         # Send headers and data
         response_headers = self.return_200(data)
@@ -765,263 +689,104 @@ class H2Protocol(Protocol):
         print "Done in streamComplete."
 
     # ================================================ #
-    #   Helper function to open the database           #
+    #   Get user's email from user token               #
     # ================================================ #
-    def db_open(self):
-        db = MySQLdb.connect("localhost", "130user", "130security", "cs130")
-        cursor = db.cursor()
-        return (db, cursor)
+    def get_email(self, user):        
+        print "in get_email with user '%s'" % user
         
-    # ================================================ #
-    #   Helper function to close database (LOL)        #
-    # ================================================ #
-    def db_close(self, db):
-        db.close()       
+        jstr = json.loads(user)
+        jemail = json.loads(self.db_get_user_email(jstr['token']))
+        email_addr = jemail['email']
+        return email_addr
 
     # ================================================ #
-    #   Check whether the user is in the database      #
+    #   Send email to unverified users                 #
     # ================================================ #
-    def db_validate(self, data):
-        db, cursor = self.db_open()
+    def send_email(self, user):           
+        print "in send_email with user '%s'" % user
 
-        # Query database for username
-        cursor.execute(
-            "SELECT username, COUNT(*) FROM Users WHERE username='%s' " % data
-        )        
+        s = sendEmail.send_Email()
+        email = self.get_email(user)
+        otp = self.generate_OTP_code()
+        
+        print "    About to email '%s' with OTP '%s'" % (email, otp)
+        s.send(email, otp)
 
-        has_it = cursor.fetchone()
-        self.db_close(db)
+    # ================================================ #
+    #   Get user's phone number from user token        #
+    # ================================================ #
+    def get_phone(self, user):        
+        print "in get_phone with user '%s'" % user
+        
+        jstr = json.loads(user)
+        phone_num = json.loads(self.db_get_user_phone(jstr['token']))
+        phone = phone_num['phone']
+        return phone
 
-        # if user is not found, the GET should fail
-        if has_it[0] is None:
-            print "    NOT IN DB!"
+    # ================================================ #
+    #   Send text to unverified users                 #
+    # ================================================ #
+    def send_sms(self, user):
+        print "in send_sms with user '%s'" % user
+
+        s = sendSMS.send_SMS()
+        phone = self.get_phone(user)
+        otp = self.generate_OTP_code()
+        
+        print "    About to send sms '%s' with OTP '%s'" % (phone, otp)
+        s.send(phone, otp)
+
+    # ================================================ #
+    #   Generate one-time-pass                         #
+    # ================================================ #
+    def generate_OTP_code(self):
+        print "in generate_OTP_code"
+        
+        otp = getOTP.OTP()               
+        value = otp.gen_totp()
+        
+        print "    GOT value '%s'" % value 
+        return value
+
+    # ================================================ #
+    #   Generate counter-based one-time-pass           #
+    # ================================================ #
+    def generate_HOTP_code(self):
+        print "in generate_OTP_code"        
+
+        hotp = getOTP.OTP()
+        global cnt         
+        value = hotp.gen_hotp(cnt)
+
+        # increment counter so next HOTP code differs
+        # if counter exceeds max int value in system, reset
+        if cnt < sys.maxsize:
+            cnt += 1
         else:
-            print "--> FETCHED:", has_it[0]
-
-        return has_it[0]
-
-    # ================================================ #
-    #   Check whether user token is in the database    #
-    # ================================================ #
-    def db_validate_token(self, token):
-        db, cursor = self.db_open()
-
-        # Query database for username
-        cursor.execute(
-            "SELECT id_token, COUNT(*) FROM Users WHERE id_token='%s' " % token
-        )        
-
-        has_it = cursor.fetchone()
-        self.db_close(db)
-
-        # if user is not found, the GET should fail
-        if has_it[0] is None:
-            print "    NOT IN DB!"
-        else:
-            print "--> FETCHED:", has_it[0]
-
-        return has_it[0]
+            cnt = 0
         
-    # ================================================ #
-    #   Register the user in the database              #
-    # ================================================ #    
-    def db_set(self, dat, stream_id):
-        db, cursor = self.db_open()
-        
-        print "in db_set, values %s %s %s %s" % (dat["username"], dat["email"], dat["phone"], dat["token"])
-        
-        # Insert values into database 
-        sql = "INSERT INTO Users (username, email, phone, id_token, dev_token) VALUES ('%s', '%s', '%s', '%s', '%s')" % \
-             (dat["username"], dat["email"], dat["phone"], dat["token"], '')
-        
-        try:
-            cursor.execute(sql)
-            db.commit()
-            print "Values inserted into database."
-        except:
-            db.rollback()
-            print "Error inserting, rolling back..."
-            print "409 Conflict, Invalid POST -- entry already in database?"
-            
-        self.db_close(db)
-
-
-
-################# This needs to be updated! #######################
-
+        print "    GOT value '%s'" % value 
+        return value
 
     # ================================================ #
-    #   Update the user token in the database          #
+    #   Generate provisioned email                     #
     # ================================================ #
-    def db_update(self, dat, stream_id):
-        print "in db_update, values %s %s %s" % (dat["username"], dat["email"], dat["token"])
+    def generate_OTP_prov(self, email):  
+        print "in generate_OTP_prov with email '%s'" % email
         
-        db, cursor = self.db_open()
+        otp = getOTP.OTP()               
+        provisioned = otp.gen_prov(email)
         
-        # Update values in database 
-        sql = 'UPDATE Users SET id_token="%s" WHERE username="%s" ' % (dat["token"], dat["username"])
-        
-        print "UPDATING token"
-        
-        try:
-            cursor.execute(sql)
-            db.commit()
-            print "    New token value '%s' inserted into database." % dat["token"]
-        except:
-            db.rollback()
-            print "Error inserting, rolling back..."
-            print "409 Conflict, Invalid POST -- entry already in database?"
-            
-        self.db_close(db)
+        print "    GOT provisioned uri '%s'" % provisioned    
+        return provisioned
 
     # ================================================ #
-    #   Update the device dev_token in the database    #
+    #   Generate random token to identify user by      #
     # ================================================ #
-    def db_update_token(self, dat, stream_id):
-        print "in db_update_token, values %s %s" % (dat["id_token"], dat["dev_token"])
-        
-        db, cursor = self.db_open()
-        # Update values in database 
-        sql = 'UPDATE Users SET dev_token="%s" WHERE id_token="%s" ' % (dat["dev_token"], dat["id_token"])
-        
-        print "UPDATING dev_token"
-        
-        try:
-            cursor.execute(sql)
-            db.commit()
-            print "    New token value '%s' inserted into database." % dat["dev_token"]
-        except:
-            db.rollback()
-            print "Error inserting, rolling back..."
-            print "409 Conflict -- entry already in database?"
-            
-        self.db_close(db)
-
-    # ================================================ #
-    #   Get user info from database for GET response   #
-    # ================================================ #
-    def db_get(self, data):
-        print "in db_get with username '%s'" % data
-            
-        try:
-            db, cursor = self.db_open()
-            
-            # Query database for token
-            cursor.execute("SELECT id_token FROM Users WHERE username= %s ", (data,))
-            res = cursor.fetchall()
-            self.db_close(db)
-        except:
-            print "Error fetching data..."
-        
-        print "    Status obtained from database, token = ", res[0][0]
-
-        # Specify what to return for GET requests
-        # in this case, return username and token for the user
-        jstr = {}
-        jstr['username'] = data
-        jstr['token'] = res[0][0]
-        jstr_data = json.dumps(jstr)
-        return jstr_data
-
-    # ================================================ #
-    #   Get user token from database for APN POST      #
-    # ================================================ #
-    def db_get_user_token(self, data):
-        print "in db_get_user_token with username '%s'" % data
-            
-        try:
-            db, cursor = self.db_open()
-            
-            # Query database for token
-            cursor.execute("SELECT id_token FROM Users WHERE username= %s ", (data,))
-            res = cursor.fetchall()
-            self.db_close(db)
-        except:
-            print "    Error fetching data..."
-        
-        print "    Values obtained from database, token = ", res[0][0]
-
-        # Specify what to return for GET requests
-        # in this case, return username and token for the user
-        jstr = {}
-        jstr['token'] = res[0][0]
-        jstr_data = json.dumps(jstr)
-        return jstr_data
-
-    # ================================================ #
-    #   Get user email from database for emaling       #
-    # ================================================ #
-    def db_get_user_email(self, data):
-        print "in db_get_user_email with token '%s'" % data
-            
-        try:
-            db, cursor = self.db_open()
-            
-            # Query database for token
-            cursor.execute("SELECT email FROM Users WHERE id_token= %s ", (data,))
-            res = cursor.fetchall()
-            self.db_close(db)
-        except:
-            print "    Error fetching data..."
-        
-        print "    Values obtained from database, email = ", res[0][0]
-
-        # Specify what to return for GET requests
-        # in this case, return username and token for the user
-        jstr = {}
-        jstr['email'] = res[0][0]
-        jstr_data = json.dumps(jstr)
-        return jstr_data
-
-    # ================================================ #
-    #   Get user dev_token from database               #
-    # ================================================ #
-    def db_get_user_dev_token(self, data):
-        print "in db_get_user_dev_token with token '%s'" % data
-            
-        try:
-            db, cursor = self.db_open()
-            
-            # Query database for token
-            cursor.execute("SELECT dev_token FROM Users WHERE id_token= %s ", (data,))
-            res = cursor.fetchall()
-            self.db_close(db)
-        except:
-            print "    Error fetching data..."
-        
-        print "    Values obtained from database, dev_token = ", res[0][0]
-
-        # Specify what to return for GET requests
-        # in this case, return email for the user
-        jstr = {}
-        jstr['dev_token'] = res[0][0]
-        jstr_data = json.dumps(jstr)
-        return jstr_data
-
-    # ================================================ #
-    #   Get user phone from database for texting       #
-    # ================================================ #
-    def db_get_user_phone(self, data):
-        print "in db_get_user_phone with token '%s'" % data
-            
-        try:
-            db, cursor = self.db_open()
-            
-            # Query database for token
-            cursor.execute("SELECT phone FROM Users WHERE id_token= %s ", (data,))
-            res = cursor.fetchall()
-            self.db_close(db)
-        except:
-            print "    Error fetching data..."
-        
-        print "    Values obtained from database, phone = ", res[0][0]
-
-        # Specify what to return for GET requests
-        # in this case, return phone for the user
-        jstr = {}
-        jstr['phone'] = res[0][0]
-        jstr_data = json.dumps(jstr)
-        return jstr_data
+    def gen_token(self):
+        # Use all digits and letters to choose from
+        seed = string.letters + string.digits
+        return ''.join(random.choice(seed) for i in xrange(16))
 
     # ================================================ #
     #   Trigger return of 404 in case of error         #
@@ -1060,14 +825,165 @@ class H2Protocol(Protocol):
         ]
         self.conn.send_headers(stream_id, response_headers, end_stream=True)
 
+    ###########################################
+    ###### DATABASE FUNCTIONS BEGIN HERE ######
+    ###########################################
+
     # ================================================ #
-    #   Generate random token to identify user by      #
+    #   Helper function to open the database           #
     # ================================================ #
-    def gen_token(self):
-        # Use all digits and letters to choose from
-        seed = string.letters + string.digits
+    def db_open(self):
+        db = MySQLdb.connect("localhost", "130user", "130security", "cs130")
+        cursor = db.cursor()
+        return (db, cursor)
         
-        return ''.join(random.choice(seed) for i in xrange(16))
+    # ================================================ #
+    #   Helper function to close database (LOL)        #
+    # ================================================ #
+    def db_close(self, db):
+        db.close()       
+
+    # ================================================ #
+    #   One DB function to validate all                #
+    #   (i.e. execute lookup/verify queries)           #
+    # ================================================ #    
+    def db_run_validate_query(self, query):
+        db, cursor = self.db_open()   
+        cursor.execute(query)
+        has_it = cursor.fetchone()
+        self.db_close(db)
+        
+        if has_it[0] is None:
+            print "    NOT IN DB!"
+        else:
+            print "--> DB FETCHED:", has_it[0]
+            
+        return has_it[0]
+    
+    # ================================================ #
+    #   Check whether the user is in the database      #
+    # ================================================ #
+    def db_validate_username(self, data):    
+        print "==> in db_validate_username with %s" % data
+        
+        query = "SELECT username, COUNT(*) FROM Users WHERE username='%s' " % data           
+        res = self.db_run_validate_query(query)
+        
+        return res
+    
+    # ================================================ #
+    #   Check whether user token is in the database    #
+    # ================================================ #
+    def db_validate_token(self, token):
+        print "==> in db_validate_token with %s" % token    
+    
+        query = "SELECT id_token, COUNT(*) FROM Users WHERE id_token='%s' " % token
+        res = self.db_run_validate_query(query)
+        
+        return res
+
+    # ================================================ #
+    #   Run additive queries to database               #
+    # ================================================ #
+    def db_run_modify_query(self, query):
+        db, cursor = self.db_open()
+        
+        try:
+            cursor.execute(query)
+            db.commit()
+            print "Values inserted into database."
+        except:
+            db.rollback()
+            print "Error inserting, rolling back..."
+            print "409 Conflict, Invalid POST -- entry already in database?"
+            
+        self.db_close(db)  
+        
+    # ================================================ #
+    #   Register the user in the database              #
+    # ================================================ #    
+    def db_set(self, dat):       
+        print "in db_set, values %s %s %s %s" % (dat["username"], dat["email"], dat["phone"], dat["token"])
+        
+        query = "INSERT INTO Users (username, email, phone, id_token, dev_token) VALUES ('%s', '%s', '%s', '%s', '%s')" % \
+             (dat["username"], dat["email"], dat["phone"], dat["token"], '')
+
+        print "    INSERTING user data into DB..." 
+        self.db_run_modify_query(query)
+               
+    # ================================================ #
+    #   Update the device dev_token in the database    #
+    # ================================================ #
+    def db_update_token(self, dat):
+        print "in db_update_token, values %s %s" % (dat["id_token"], dat["dev_token"])
+        
+        query = 'UPDATE Users SET dev_token="%s" WHERE id_token="%s" ' % (dat["dev_token"], dat["id_token"])
+        
+        print "    UPDATING dev_token in DB..."
+        self.db_run_modify_query(query)
+
+    # ================================================ #
+    #   Run select query in database                   #
+    # ================================================ #
+    def db_run_get_query(self, query, to_return):
+        try:
+            db, cursor = self.db_open()
+            cursor.execute(query)
+            res = cursor.fetchall()
+            self.db_close(db)
+        except:
+            print "    Error fetching data..."
+        else:       
+            print "    Values obtained from database, token = ", res[0][0]
+            jstr = {}
+            jstr[to_return] = res[0][0]
+            jstr_data = json.dumps(jstr)
+            return jstr_data
+        return ''
+
+    # ================================================ #
+    #   Get user token from database for APN POST      #
+    # ================================================ #
+    def db_get_user_token(self, data):
+        print "in db_get_user_token with username '%s'" % data
+
+        obtain_json = 'token'
+        query = "SELECT id_token FROM Users WHERE username='%s' " % data
+        res = self.db_run_get_query(query, obtain_json)
+        return res
+
+    # ================================================ #
+    #   Get user email from database for emaling       #
+    # ================================================ #
+    def db_get_user_email(self, data):
+        print "in db_get_user_email with token '%s'" % data
+
+        obtain_json = 'email'
+        query = "SELECT email FROM Users WHERE id_token='%s' " % data
+        res = self.db_run_get_query(query, obtain_json) 
+        return res
+
+    # ================================================ #
+    #   Get user dev_token from database               #
+    # ================================================ #
+    def db_get_user_dev_token(self, data):
+        print "in db_get_user_dev_token with token '%s'" % data
+
+        obtain_json = 'dev_token'
+        query = "SELECT dev_token FROM Users WHERE id_token='%s' " % data
+        res = self.db_run_get_query(query, obtain_json) 
+        return res
+
+    # ================================================ #
+    #   Get user phone from database for texting       #
+    # ================================================ #
+    def db_get_user_phone(self, data):
+        print "in db_get_user_phone with token '%s'" % data
+
+        obtain_json = 'phone'
+        query = "SELECT phone FROM Users WHERE id_token='%s' " % data
+        res = self.db_run_get_query(query, obtain_json) 
+        return res
 
 # ================================================ #
 #   Setup the H2 factory for the HTTP/2.0 protocol #
