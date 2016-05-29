@@ -1,5 +1,31 @@
 Changelog:
 
+5-28-16 8:45pm:
+	- Implemented /backup POST request handling, as requested by Fay. 
+		This addresses the unverified user scenario as follows:
+			User registers with site but does NOT install the App.
+			As a consequence, Server does not have dev_token.
+			When user (who has enabled TwoEfAy) attempts to log into site, Client sends
+			/login POST to Server with: 
+				{"token":"user's token"}, 
+			to which the Server returns:
+				{"login":"unverified"}
+			so that Client can display message to User, requesting OTP. 
+			At the same time, Server sends a counter-based OTP to User via SMS.
+			User types in OTP at Client page.
+			Client sends OTP to Server for verification:
+				{"token":"user's token","otp":"324224"}
+			which the Server verifies and responds to Client with:
+				{"login":"success or failure"}
+			Client then lets User in or rejects user login attempt.
+	
+	- Added verify_TOTP_code() and verify_HOTP_code() that call the getOTP module
+		to verify the provided one-time-pass. Additionally, added the verification
+		functions verify_TOTP() and verify_HOTP in the getOTP to do the actual
+		verification.
+	
+	- Removed generate_OTP_prov() as we won't be using it.
+
 5-26-16 6:19pm:
 	Tweaked the POST return to include data, as requested by Fay. Now a /register
 	POST request with the following JSON:

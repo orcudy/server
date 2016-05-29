@@ -90,14 +90,14 @@ mysql -u root -p
 
 ```mysql
 CREATE DATABASE cs130;
-GRANT ALL ON cs130.* TO '130user' IDENTIFIED BY '130security';
+GRANT ALL ON cs130.* TO '130user' IDENTIFIED BY '130Security!';
 
 USE cs130;
 CREATE TABLE Users(
 	username VARCHAR(40) UNIQUE NOT NULL PRIMARY KEY, 
-	email VARCHAR(40) UNIQUE NOT NULL,
-	phone VARCHAR(12) UNIQUE NOT NULL,
-	id_token VARCHAR(80) PRIMARY KEY, 
+	email VARCHAR(40) NOT NULL,
+	phone VARCHAR(12) NOT NULL,
+	id_token VARCHAR(80) UNIQUE, 
 	dev_token VARCHAR(80)
 ); 
 
@@ -165,14 +165,14 @@ You will have to enter your PEM key phrase after running the above command.
 > a POST with the following request:
 
 ```sh
-curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"sexy","email":"whatever@some.com"}' https://localhost:8080/register
+curl --http2 -H "Content-Type: application/json" -X POST -d '{"username":"sexy","email":"whatever@some.com", "phone":"1234567890"}' https://localhost:8080/register
 ```
 
 **NOTE:** 
 If you get an error stating the certificate is self-signed and cannot be verified, then run cURL with the **-k** flag. 
 For example, to register user **dude** with email **animal@email.com** and IGNORE certificate security:
 ```sh
-curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"username":"dude", "email":"animal@email.com"}' https://localhost:8080/register
+curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"username":"dude", "email":"animal@email.com", "phone":"1234567890"}' https://localhost:8080/register
 ```
 
 ### GET request to your server:
@@ -193,13 +193,19 @@ The return for our droplet server would be the following JSON:
 ### Deployed on the droplet
 ---
 ###### POST params available and their purpose:
-| Path        | Purpose                                        | JSON data sent with request   | Server reaction                                             |
-| ----------- |:----------------------------------------------:|------------------------------:|------------------------------------------------------------:|
-| /register   | Client registers new user                      | username, email, phone        | responds to Client's POST with JSON containing id_token     |
-| /verify     | App verifies user + token device token         | id_token, dev_token           | Can now POST to APN with dev_token                          |
-| /login      | Client reports that user attempts to log in    | id_token                      | POSTs to APN with dev_token (or SMS OTP & send to Client)   |
-| /success    | App reports user authenticated successfully    | id_token                      | POSTs /login to Client with JSON with id_token, success     |
-| /failure    | App reports user authenticated unsuccessfully  | id_token                      | POSTS /login to Client with JSON with id_token, failure     |
+__C__ = Client
+__S__ = Server
+__A__ = App
+__U__ = User
+
+| Path       | Purpose                                  | JSON data sent with request  | Server response/action                               |
+| ----------:|-----------------------------------------:|-----------------------------:|-----------------------------------------------------:|
+| /register  | C registers new U                        | username, email, phone       | responds to C's POST with JSON containing id_token   |
+| /verify    | A verifies U and device token            | id_token, dev_token          | sends POST to APN with dev_token                     |
+| /login     | C reports that U attempts to log in      | id_token                     | POSTs to APN with dev_token (or SMS OTP to U)        |
+| /backup    | C provides OTP entered by unverified U   | id_token, otp                | verify OTP the U entered at C                        |
+| /success   | A reports U authenticated successfully   | id_token                     | POSTs /login to C with JSON with id_token, success   |
+| /failure   | A reports U authenticated unsuccessfully | id_token                     | POSTS /login to C with JSON with id_token, failure   |
 
 
 The database has been setup on Chris's droplet, so you can test POST and GET 
@@ -209,20 +215,18 @@ requests in the following way:
 ```sh
 curl --http2 -kv -H "Content-Type: application/json" -X POST -d '{"username":"crazy","email":"crazy@email.com", "phone":"1234567890"}' https://45.55.160.135:8080/register
 ```
-
-The above get should return a JSON of the form:
+Server responds with:
 ```
-{"token":"<some token>"}
+{'token':'<the user's token>'}
 ```
 
 #### GET:
 ```sh
 curl --http2 -kv https://45.55.160.135:8080/user/crazy
 ```
-
-The above get should return a JSON of the form:
+Server responds with:
 ```
-{"token":"<some token>"}
+{'token':'<the user's token>'}
 ```
 
 #### App -> Server /verify POST:
@@ -230,17 +234,31 @@ The above get should return a JSON of the form:
 curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"id_token":"3IYsBH6wDEyVCZfn","dev_token":"34f4rhg5424h234f83hf"}' https://localhost:8080/verify
 ```
 This will set the dev_token for user identified by id_token who happens to currently be user "**isThisOn?**".
+Server responds with:
+{'login':'verified'}
 
 ### Client -> Server /login POST:
 ```sh
 curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"3IYsBH6wDEyVCZfn"}' https://localhost:8080/login
 ```
+Server responds with:
+{'login':'<success or failure>'}
+
+### Client -> Server /backup POST (for unverified users):
+```sh
+curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"3IYsBH6wDEyVCZfn", "otp":"234234"}' https://localhost:8080/backup
+```
+Server responds with:
+{'login':'<success or failure>'}
 
 ### App -> Server /success and /failure POSTs:
 ```sh
 curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"3IYsBH6wDEyVCZfn"}' https://localhost:8080/success
 curl --http2 -k -H "Content-Type: application/json" -X POST -d '{"token":"3IYsBH6wDEyVCZfn"}' https://localhost:8080/failure
 ```
+Server sends the following to Client:
+{'token':'<user's token>','login':'<success or failure>'}
+
 
 ### Example:
 ```sh
@@ -257,10 +275,21 @@ ross@ubuntu:~$ curl --http2 -k -H "Content-Type: application/json" -X POST -d '{
 ```
 All the POST requests above trigger POST requests on the server that should be 
 sent to various places but I'm currently sending all to https://httpbin.org/post,
-so I can verify that the Server POST requests contain the correct info. 
-They do. :)
+so I can verify that the Server POST requests contain the correct info. Thus far, they do. :)
 
+### How to run the server:
+Chris set up a systemd to make everyone's life easier, here are the instructions:
+> You can control the server as follows:
+> 1. sudo systemctl start twoefay-server
+> 2. sudo systemctl stop twoefay-server
+> 3. sudo systemctl restart twoefay-server
 
+> If anything goes wrong, you can see logs with:
+> 1. sudo systemctl status twoefay-server
+> 2. sudo journalctl -xe
+
+-----
+-----
 #### Note on _encrypted string_:
 The **crypto.py** module does the encryption and decryption. I call it within
 the server to decrypt the encrypted string sent with the request but if you,
@@ -285,26 +314,3 @@ Run it and you'll get the string. :)
 
 **Currently, this functionality is disabled, so you don't have to generate
 this string when testing!**
-
-#### How to run server in the background:
-Since the server requires the PEM pass phrase to be provided when starting it, 
-it is not feasible to just run it with nohup. Instead, here is how I've been 
-running it in background:
-
-* Start the server as usual and type in the pass phrase when prompted.
-  ```sh
-  python twisted-server.py localhost
-  ```
-* Pause the server with "Ctrl-z," which will print something like
-  ```sh
-  [1]+ Stopped        python twisted-server.py 45.55.160.135
-  ```
-* Note that [1] is the job ID that we now use to disown the service:
-  ```sh
-  disown -h %1
-  ```
-* Now start the job in background:
-  ```sh 
-  bg %1
-  ```
-* **PROFIT!**

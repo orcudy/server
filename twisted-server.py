@@ -5,8 +5,6 @@ twisted-server.py
 
 A fully-functional HTTP/2 server written for Twisted.
 """
-import functools
-import mimetypes
 import os
 import os.path
 import sys
@@ -210,6 +208,9 @@ class H2Protocol(Protocol):
             elif param_list[0] == 'login':
                 print "LOG IN user!"
                 self.post_type = 'login'
+            elif param_list[0] == 'backup':
+                print "BACKUP LOG IN for user!"
+                self.post_type = 'backup'                
             elif param_list[0] == 'success':
                 print "SUCCESSFUL login!"
                 self.post_type = 'success'
@@ -342,13 +343,17 @@ class H2Protocol(Protocol):
         if 'register' in self.post_type:
             self.handle_register_request(jdata, stream_id)
 
-        # USER REGISTERS ON APP, APP VERIFIES USER WITH THE SERVER
+        # USER REGISTERS ON APP, APP VERIFIES USER WITH SERVER
         elif 'verify' in self.post_type:
             self.handle_verify_request(jdata, stream_id)
                 
         # LOGIN ATTEMPT, WE SHOULD CALL THE APN  
         elif 'login' in self.post_type:
             self.handle_login_request(jdata, stream_id)
+            
+        # BACKUP LOGIN ATTEMPT, WE NOTIFY CLIENT & VERIFY OTP  
+        elif 'backup' in self.post_type:
+            self.handle_backup_request(jdata, stream_id)
 
         # received 'success' POST from App, send 'success' POST to Client 
         elif 'success' in self.post_type:
@@ -365,9 +370,15 @@ class H2Protocol(Protocol):
     # ================================================ #
     def handle_register_request(self, jdata, stream_id):
         print "...REGISTER new user!"
-        print "    username: " + jdata["username"]
-        print "    email: " + jdata["email"]
-        print "    phone: " + jdata["phone"]
+        
+        try:            
+            print "    username: " + jdata["username"]
+            print "    email: " + jdata["email"]
+            print "    phone: " + jdata["phone"]
+        except KeyError:
+            print "    KeyError -- invalid JSON provided: %s" % jdata
+            self.error = True
+            return
         
         # if user is already registered, the POST should fail
         if self.db_validate_username(jdata["username"]) is not None:
@@ -391,13 +402,6 @@ class H2Protocol(Protocol):
             print "    Removing 'phone' from JSON..."
             jdata.pop('phone')
 
-            # Send POST with TOKEN to Client
-            # - the Client displays the token to the User
-            # so the user can use it to register with the App.
-            # - the App will then use that token to communicate
-            # with the Server (instead of a username)
-#            self.send_POST(json.dumps(jdata))
-
             # send token in the response to the POST request itself
             print "    Removing 'username' from JSON..."
             jdata.pop('username')            
@@ -409,16 +413,37 @@ class H2Protocol(Protocol):
     #   handle POST for a /verify request              #
     # ================================================ #
     def handle_verify_request(self, jdata, stream_id):
-        print "...VERIFY new user with App!"                 
-        print "    id_token: " + jdata["id_token"]
-        print "    dev_token: " + jdata["dev_token"]
+        print "...VERIFY new user with App!"
+        
+        try:            
+            print "    id_token: " + jdata["id_token"]
+            print "    dev_token: " + jdata["dev_token"]
+        except KeyError:
+            print "    KeyError -- invalid JSON provided: %s" % jdata
+            self.error = True
+            return
         
         # if user token is not in DB, the POST should fail
         if self.db_validate_token(jdata["id_token"]) is not None:
             print "    USER TOKEN FOUND!"
-            self.db_update_token(jdata)    
+            self.db_update_token(jdata)   
+            
+            ### responsd to App
+            print "    Adding 'verified' to jdata."
+            # add 'verified' to JSON to return in POST
+            jdata.update({'login':'verified'})
+
+            print "    Removing 'id_token' from JSON..."
+            jdata.pop('id_token')
+            print "    Removing 'dev_token' from JSON..."
+            jdata.pop('dev_token')            
+            
+            # setting the JSON to return as response to login POST from Client
+            self.return_JSON = json.dumps(jdata)
+            print "    JSON to be returned:", self.return_JSON
+             
         else:
-            print "    CAN'T UPDATE NON-EXISTENT USER!"
+            print "    CAN'T VERIFY NON-EXISTENT USER!"
             self.error = True
             return
         
@@ -427,8 +452,14 @@ class H2Protocol(Protocol):
     # ================================================ #
     def handle_login_request(self, jdata, stream_id):
         print "...LOG IN user into Client!"
-        print "    token: " + jdata["token"]
         
+        try:            
+            print "    token: " + jdata["token"]
+        except KeyError:
+            print "    KeyError -- invalid JSON provided: %s" % jdata
+            self.error = True
+            return        
+
         # if user token is not in DB, the POST should fail
         if self.db_validate_token(jdata["token"]) is not None:
             print "    USER TOKEN FOUND!"
@@ -436,39 +467,32 @@ class H2Protocol(Protocol):
             # Get dev_token from database using id_token
             validated = json.loads(self.db_get_user_dev_token(jdata["token"]))
             
-            # Backup method
+            ### Backup method ###
             # If dev_token is '' (i.e. no dev_token to call APN)
             # send OTP via email/sms and POST OTP to Client 
             if not validated['dev_token']:
                 print "    will send OTP via backup instead"
                 dat = json.dumps(jdata)
+
+                ### contact User -- send OTP via email or SMS
                 
                 # send OTP code via email                        
-#                self.send_email(dat)
+                # self.send_email(dat)
                                        
                 # send SMS
-#                self.send_sms(dat)
+                self.send_sms(dat)
 
-                ### HOTP ###       
-                # generate and add HOTP to JSON
-#                hotp = self.generate_HOTP_code()
-#                print "    Adding HOTP '%s' to jdata." % hotp
-                # add HOTP to JSON to return in POST
-#                jdata.update({'HOTP':hotp})
-
-                ### TOTP ###
-                # generate and add TOTP to JSON
-                totp = self.generate_OTP_code()
-                print "    Adding TOTP '%s' to jdata." % totp
-                # add TOTP to JSON to return in POST
-                jdata.update({'TOTP':totp})
+                ### responsd to Client
+                print "    Adding 'unverified' to jdata."
+                # add 'unverified' to JSON to return in POST
+                jdata.update({'login':'unverified'})
 
                 print "    Removing 'token' from JSON..."
                 jdata.pop('token')
                 
-                # setting to return HOTP in response to login POST from Client
-                self.return_JSON = json.dumps(jdata)            
-                print "    JSON to be POST-ed:", self.return_JSON
+                # setting the JSON to return as response to login POST from Client
+                self.return_JSON = json.dumps(jdata)
+                print "    JSON to be returned:", self.return_JSON
                     
             else:
                 # Send POST with TOKEN to APN
@@ -482,9 +506,62 @@ class H2Protocol(Protocol):
                 ######################################
                 self.send_POST(json.dumps(jdata))
                 
-                
         else:
             print "    CAN'T LOGIN NON-EXISTENT USER!"
+            self.error = True
+            return
+
+    # ================================================ #
+    #   handle POST for a /backup request             #
+    # ================================================ #
+    def handle_backup_request(self, jdata, stream_id):
+        print "...BACKUP login for user!"   
+
+        try:            
+            print "    token: " + jdata["token"]
+            print "    otp: " + jdata["otp"]
+        except KeyError:
+            print "    KeyError -- invalid JSON provided: %s" % jdata
+            self.error = True
+            return   
+                
+        # if user token is not in DB, the POST should fail
+        if self.db_validate_token(jdata["token"]) is not None:
+            print "    USER TOKEN FOUND!"
+
+            print "    Removing 'token' from JSON..."
+            jdata.pop('token')
+
+            # check that user typed in the correct OTP:            
+            ### verify TOPT
+            #verified = self.verify_TOTP_code(jdata["otp"])          
+            
+            ### verify HOTP
+            verified = self.verify_HOTP_code(jdata["otp"])
+            login_status = ''
+            
+            if verified:
+                print "    Verification succeeded!"
+                login_status = 'success'
+
+                # add {'login':'success'} to the return JSON
+                jdata.update({'login':'success'})
+                         
+            else:
+                print "    Verficiation failed!"
+                login_status = 'failure'
+
+                # add {'login':'failure'} to the return JSON
+                jdata.update({'login':'failure'})
+                
+            print "    Adding login '%s' to jdata." % login_status
+            print "    Result:", json.dumps(jdata)
+
+            # setting to return response to login POST from Client
+            self.return_JSON = json.dumps(jdata)
+            
+        else:
+            print "    CAN'T SUCCEED FOR NON-EXISTENT USER!"
             self.error = True
             return
 
@@ -494,8 +571,13 @@ class H2Protocol(Protocol):
     def handle_success_request(self, jdata, stream_id):
         print "...SUCCESSFUL login for user!"   
         self.success = True
-              
-        print "    token: " + jdata["token"]
+
+        try:            
+            print "    token: " + jdata["token"]
+        except KeyError:
+            print "    KeyError -- invalid JSON provided: %s" % jdata
+            self.error = True
+            return  
         
         # if user token is not in DB, the POST should fail
         if self.db_validate_token(jdata["token"]) is not None:
@@ -507,12 +589,13 @@ class H2Protocol(Protocol):
             print "    Adding login '%s' to jdata." % self.post_type
             print "    Result:", json.dumps(jdata)
             
-            # Received 'success' from App, send POST with login status to Client
+            #################################################
+            # Received 'success' from the App for a user,
+            # so send POST with login status to the Client
+            #################################################
 
-            #################################################            
             # This is a POST-request to httpbin.org
-            # Need actual URL for Client
-             #################################################           
+            # Need actual URL for Client         
             self.send_POST(json.dumps(jdata))  
         else:
             print "    CAN'T SUCCEED FOR NON-EXISTENT USER!"
@@ -525,8 +608,13 @@ class H2Protocol(Protocol):
     def handle_failure_request(self, jdata, stream_id):
         print "...FAILED login for user!"                 
         self.failure = True
-                
-        print "    token: " + jdata["token"]
+
+        try:            
+            print "    token: " + jdata["token"]
+        except KeyError:
+            print "    KeyError -- invalid JSON provided: %s" % jdata
+            self.error = True
+            return
         
         # if user token is not in DB, the POST should fail
         if self.db_validate_token(jdata["token"]) is not None:
@@ -537,6 +625,7 @@ class H2Protocol(Protocol):
 
             print "    Adding login '%s' to jdata." % self.post_type
             print "    Result:", json.dumps(jdata)
+            
             #################################################
             # Received 'failure' from the App for a user,
             # so send POST with login status to the Client
@@ -589,31 +678,12 @@ class H2Protocol(Protocol):
                 print "KeyError with stream_data in handle_GET."
                 self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
             else:
-                ########################################################
-                ########################################################
-                # THIS WAS INITIAL IMPLEMENTATION -- NOT VALID ANYMORE
-                # send POST to APN
-                # if APP POSTS 'success' we respond to the 
-                # GET with 'success'
-                # else we respond with 'failure'
-                ########################################################
-                ########################################################
-
-                # Send POST with TOKEN to the APN
-                self.send_POST(to_send)
-
                 # Send the response to the GET request
                 stream_data.data.write(to_send)
         else:
             print "=== Invalid username provided!"
             self.error = True
-            return    
-        
-        # just for testing --- REMOVE THESE 4 lines             
-        hotp = self.generate_HOTP_code()
-        global cnt
-        print "CURRENT COUNTER =", cnt
-        print "CURRENT CODE =", hotp
+            return
         
         print "GET complete."
 
@@ -707,7 +777,12 @@ class H2Protocol(Protocol):
 
         s = sendEmail.send_Email()
         email = self.get_email(user)
-        otp = self.generate_OTP_code()
+        
+        ### generate TOTP to send -- secure but not reliable, expires in < 30 sec
+        # otp = self.generate_TOTP_code()
+
+        ### generate HOTP to send
+        otp = self.generate_HOTP_code()
         
         print "    About to email '%s' with OTP '%s'" % (email, otp)
         s.send(email, otp)
@@ -724,14 +799,19 @@ class H2Protocol(Protocol):
         return phone
 
     # ================================================ #
-    #   Send text to unverified users                 #
+    #   Send text to unverified users                  #
     # ================================================ #
     def send_sms(self, user):
         print "in send_sms with user '%s'" % user
 
         s = sendSMS.send_SMS()
         phone = self.get_phone(user)
-        otp = self.generate_OTP_code()
+        
+        ### generate TOTP to send -- secure but not reliable, expires in < 30 sec
+        # otp = self.generate_TOTP_code()
+
+        ### generate HOTP to send
+        otp = self.generate_HOTP_code()
         
         print "    About to send sms '%s' with OTP '%s'" % (phone, otp)
         s.send(phone, otp)
@@ -739,8 +819,8 @@ class H2Protocol(Protocol):
     # ================================================ #
     #   Generate one-time-pass                         #
     # ================================================ #
-    def generate_OTP_code(self):
-        print "in generate_OTP_code"
+    def generate_TOTP_code(self):
+        print "in generate_TOTP_code"
         
         otp = getOTP.OTP()               
         value = otp.gen_totp()
@@ -752,7 +832,7 @@ class H2Protocol(Protocol):
     #   Generate counter-based one-time-pass           #
     # ================================================ #
     def generate_HOTP_code(self):
-        print "in generate_OTP_code"        
+        print "in generate_HOTP_code"        
 
         hotp = getOTP.OTP()
         global cnt         
@@ -769,16 +849,35 @@ class H2Protocol(Protocol):
         return value
 
     # ================================================ #
-    #   Generate provisioned email                     #
+    #   Verify time-based one-time-pass                #
     # ================================================ #
-    def generate_OTP_prov(self, email):  
-        print "in generate_OTP_prov with email '%s'" % email
+    def verify_TOTP_code(self, code):
+        print "in verify_TOTP_code"        
+
+        totp = getOTP.OTP()
+        value = totp.verify_totp(code)
         
-        otp = getOTP.OTP()               
-        provisioned = otp.gen_prov(email)
+        print "    GOT value '%s'" % value 
+        return value
+
+    # ================================================ #
+    #   Verify counter-based one-time-pass             #
+    # ================================================ #
+    def verify_HOTP_code(self, code):
+        print "in verify_HOTP_code"        
+
+        hotp = getOTP.OTP()
+        global cnt
         
-        print "    GOT provisioned uri '%s'" % provisioned    
-        return provisioned
+        count = 0
+        if cnt > 0:
+            count = cnt - 1
+        
+        print "    curr code: %s, count: %d" % (code, count)
+        value = hotp.verify_hotp(code, count)
+        
+        print "    GOT value '%s'" % value 
+        return value
 
     # ================================================ #
     #   Generate random token to identify user by      #
@@ -833,7 +932,7 @@ class H2Protocol(Protocol):
     #   Helper function to open the database           #
     # ================================================ #
     def db_open(self):
-        db = MySQLdb.connect("localhost", "130user", "130security", "cs130")
+        db = MySQLdb.connect("localhost", "130user", "130Security!", "cs130")
         cursor = db.cursor()
         return (db, cursor)
         
@@ -1008,7 +1107,7 @@ key = crypto.load_privatekey(crypto.FILETYPE_PEM, key_data)
 options = ssl.CertificateOptions(
     privateKey=key,
     certificate=cert,
-    acceptableProtocols=[b'h2'],
+    acceptableProtocols=[b'h2', b'http/1.1'],
 )
 
 endpoint = endpoints.SSL4ServerEndpoint(reactor, 8080, options, backlog=128)
