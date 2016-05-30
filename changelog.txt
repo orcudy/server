@@ -1,5 +1,18 @@
 Changelog:
 
+5-29-16 6:09pm:
+	- Minor error handling additions. 
+		Previously the Server would happily eat up any potentially malformed JSON and 
+		attempt to load/process it as-is, which would throw uncaught exceptions -- not sexy.
+		To address this, I added a try_read_JSON() function that takes the suspect
+		JSON string and attempts to load it. If it errors out, it'll set the self.error
+		flag to true and return an empty string that the Server can then safely view
+		and exit out. 
+		
+		Additionally, in areas where very specific JSON string is expected (such as
+		phone, email, etc.), I've put the assignment in try/except blocks to catch
+		situations in which the desired string was not found.
+
 5-28-16 8:45pm:
 	- Implemented /backup POST request handling, as requested by Fay. 
 		This addresses the unverified user scenario as follows:

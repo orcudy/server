@@ -319,6 +319,20 @@ class H2Protocol(Protocol):
             self.conn.reset_stream(stream_id, error_code=PROTOCOL_ERROR)
         else:
             stream_data.data.write(data)
+
+    # ================================================ #
+    #   Try/Except when reading in JSON                #
+    # ================================================ # 
+    def try_read_JSON(self, jstr):
+        jdata = ''
+        try:
+            jdata = json.loads(jstr)
+        except (KeyError, ValueError):
+            print "=-=-= Invalid JSON with %s!" % self.post_type            
+            self.error = True
+            pass
+                 
+        return jdata
     
     # ================================================ #
     #   Handle POST requests                           #
@@ -332,12 +346,10 @@ class H2Protocol(Protocol):
             print "Issue getting stream data in handle_POST!"
             self.error = True
             pass
-
-        try:
-            jdata = json.loads(data)
-        except KeyError:
-            print "=-=-= Invalid POST with %s!" % self.post_type            
-            pass
+            
+        jdata = self.try_read_JSON(data)
+        if not jdata:
+            return
         
         # WHEN CLIENT FIRST REGISTERS NEW USER WITH SERVER
         if 'register' in self.post_type:
@@ -465,8 +477,13 @@ class H2Protocol(Protocol):
             print "    USER TOKEN FOUND!"
            
             # Get dev_token from database using id_token
-            validated = json.loads(self.db_get_user_dev_token(jdata["token"]))
-            
+            try:
+                validated = json.loads(self.db_get_user_dev_token(jdata["token"]))
+            except (KeyError, ValueError):
+                print "Bad JSON, bad boy!"
+                self.error = True
+                return
+                
             ### Backup method ###
             # If dev_token is '' (i.e. no dev_token to call APN)
             # send OTP via email/sms and POST OTP to Client 
@@ -698,7 +715,7 @@ class H2Protocol(Protocol):
         print "in dataFrameReceived."
         
         if self.error:
-            print "   skipping due to error flag..."
+            print "    skipping due to error flag..."
             return
         else:
             self.handle_POST(data, stream_id)
@@ -720,13 +737,13 @@ class H2Protocol(Protocol):
             print "    skipping due to invalid method."
             return
         if self.error:
-            print "   skipping due to error flag."
+            print "    skipping due to error flag."
             self.errorFound(stream_id)
             return
         
         # We don't need to return data for success/failure requests
         elif self.success or self.failure:
-            print "   success/failure flag, return 200"
+            print "    success/failure flag, return 200"
             data = ''
         else:
             try:
@@ -764,8 +781,19 @@ class H2Protocol(Protocol):
     def get_email(self, user):        
         print "in get_email with user '%s'" % user
         
-        jstr = json.loads(user)
-        jemail = json.loads(self.db_get_user_email(jstr['token']))
+        #jstr = json.loads(user)
+        
+        jstr = self.try_read_JSON(user)
+        if not jstr:
+            return
+        
+        try:
+            jemail = json.loads(self.db_get_user_email(jstr['token']))
+        except (KeyError, ValueError):
+            print "Bad JSON, bad boy!"
+            self.error = True
+            return ''
+        
         email_addr = jemail['email']
         return email_addr
 
@@ -777,6 +805,10 @@ class H2Protocol(Protocol):
 
         s = sendEmail.send_Email()
         email = self.get_email(user)
+        
+        if not email:
+            print "Failed to get email."
+            return
         
         ### generate TOTP to send -- secure but not reliable, expires in < 30 sec
         # otp = self.generate_TOTP_code()
@@ -793,8 +825,19 @@ class H2Protocol(Protocol):
     def get_phone(self, user):        
         print "in get_phone with user '%s'" % user
         
-        jstr = json.loads(user)
-        phone_num = json.loads(self.db_get_user_phone(jstr['token']))
+        #jstr = json.loads(user)
+        
+        jstr = self.try_read_JSON(user)
+        if not jstr:
+            return
+        
+        try:
+            phone_num = json.loads(self.db_get_user_phone(jstr['token']))
+        except (KeyError, ValueError):
+            print "Bad JSON, bad boy!"
+            self.error = True
+            return ''
+        
         phone = phone_num['phone']
         return phone
 
@@ -806,6 +849,10 @@ class H2Protocol(Protocol):
 
         s = sendSMS.send_SMS()
         phone = self.get_phone(user)
+        
+        if not phone:
+            print "Failed to get phone."
+            return
         
         ### generate TOTP to send -- secure but not reliable, expires in < 30 sec
         # otp = self.generate_TOTP_code()
@@ -1097,6 +1144,7 @@ class H2Factory(Factory):
 root = sys.argv[1]
 
 # Load the certificate and the certificate key
+
 with open('../certs/server.crt', 'r') as f:
     cert_data = f.read()
 with open('../certs/server.key', 'r') as f:
@@ -1104,9 +1152,12 @@ with open('../certs/server.key', 'r') as f:
 
 cert = crypto.load_certificate(crypto.FILETYPE_PEM, cert_data)
 key = crypto.load_privatekey(crypto.FILETYPE_PEM, key_data)
+
+
 options = ssl.CertificateOptions(
     privateKey=key,
     certificate=cert,
+    verify=False,
     acceptableProtocols=[b'h2', b'http/1.1'],
 )
 
