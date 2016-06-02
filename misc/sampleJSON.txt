@@ -1,0 +1,6 @@
+{"userToken": {
+	"username": "poncho",
+	"email": "poncho@example.com",
+	"tokens": "76398724398754"
+	}
+}

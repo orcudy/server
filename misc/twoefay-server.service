@@ -1,0 +1,10 @@
+[Unit]
+Description=Twoefay HTTP/2 server
+After=network.target
+
+[Service]
+ExecStart=/srv/www/twoefay-server/venv/bin/python /srv/www/twoefay-server/twoefay-server.py 0.0.0.0 443
+Restart=always
+
+[Install]
+WantedBy=default.target

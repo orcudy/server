@@ -1,6 +1,6 @@
-# -*- coding: utf-8 -*-
+#!venv/bin/python
 """
-twisted-server.py
+twoefay-server.py
 ~~~~~~~~~~~~~~~~~
 
 A fully-functional HTTP/2 server written for Twisted.
@@ -32,11 +32,8 @@ from datetime import datetime
 from dateutil.parser import parse
 import random
 import string
-
 import time
-import sendEmail
-import getOTP
-import sendSMS
+from lib import sendEmail, getOTP, sendSMS, crypt
 
 RequestData = collections.namedtuple('RequestData', ['headers', 'data'])
 
@@ -339,6 +336,7 @@ class H2Protocol(Protocol):
     # ================================================ #    
     def handle_POST(self, data, stream_id):
         print "in handle_POST"
+        print("data: " + str(data))
             
         try:
             self.get_stream_data(data, stream_id)
@@ -656,13 +654,20 @@ class H2Protocol(Protocol):
             self.error = True
             return
 
+    def send_authentication_request(token, data):
+        headers = {'content-type':'application/json'}
+        payload = '{"token": "' + token + '", "topic":"com.twoefay.twoefay", "alert": "TouchID Authentication Requested", "sound" : "default", "data": "' + data + '"}'
+        response = requests.post("http://apn.twoefay.xyz",
+                                 data=payload,
+                                 headers=headers)
+        
     # ================================================ #
     #   When the App sends a POST request to Server    #
     #   with the success/failure param, we send a      #
     #   POST request to notify Client of user's        #
     #   successful or failed login attempt             #
     # ================================================ #
-    def send_POST(self, response):
+    def send_POST(self, response):        
         c = HTTPConnection(self.url)
         c.request('POST', '/post', body=response)
         resp = c.get_response()
@@ -1143,25 +1148,28 @@ class H2Factory(Factory):
 
 root = sys.argv[1]
 
+try:
+    port = int(sys.argv[2])
+except:
+    port = 443
+    
 # Load the certificate and the certificate key
 
-with open('../certs/server.crt', 'r') as f:
+base = '/srv/www/twoefay-server/certs/'
+with open(base + 'cert.pem', 'r') as f:
     cert_data = f.read()
-with open('../certs/server.key', 'r') as f:
+with open(base + 'privkey.pem', 'r') as f:
     key_data = f.read()
 
 cert = crypto.load_certificate(crypto.FILETYPE_PEM, cert_data)
 key = crypto.load_privatekey(crypto.FILETYPE_PEM, key_data)
-
-
 options = ssl.CertificateOptions(
     privateKey=key,
     certificate=cert,
-    verify=False,
-    acceptableProtocols=[b'h2', b'http/1.1'],
+    acceptableProtocols=[b'h2'],
 )
 
-endpoint = endpoints.SSL4ServerEndpoint(reactor, 8080, options, backlog=128)
+endpoint = endpoints.SSL4ServerEndpoint(reactor, port, options, backlog=128)
 print "Server is running..."
 endpoint.listen(H2Factory(root))
 reactor.run()
